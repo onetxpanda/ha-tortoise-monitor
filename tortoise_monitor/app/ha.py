@@ -8,9 +8,9 @@ from . import config, db
 TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
 
-def _get(url):
+def _get(url, timeout=20):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}"})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
 
@@ -46,19 +46,25 @@ def refresh_checks(log=print):
     location automation's helpers: each change of check_entity is a check; a
     change of sighting_entity within the next 110 s means that check saw him,
     on the camera sighting_camera_entity named then. Stored in `checks`."""
+    try:
+        _refresh_checks(log)
+    except Exception as e:
+        import traceback
+        log(f"safety checks: reading them failed: {type(e).__name__}: {e}\n{traceback.format_exc()[-1500:]}")
+
+
+def _refresh_checks(log):
     o = config.options()
     ents = [o.get("check_entity"), o.get("sighting_entity"), o.get("sighting_camera_entity")]
     if not TOKEN or not all(ents):
+        log("safety checks: not read (no Supervisor token, or the check helpers aren't set in the options)")
         return
     c = db.connect()
     last = c.execute("SELECT MAX(ts) FROM checks").fetchone()[0]
     start = (last - 600) if last else time.time() - 10 * 86400
     since = datetime.fromtimestamp(start, timezone.utc).isoformat()
     q = urllib.parse.urlencode({"filter_entity_id": ",".join(ents), "minimal_response": "1", "no_attributes": "1"})
-    try:
-        hist = _get(f"http://supervisor/core/api/history/period/{urllib.parse.quote(since)}?{q}")
-    except Exception as e:
-        log(f"safety checks: {e}"); return
+    hist = _get(f"http://supervisor/core/api/history/period/{urllib.parse.quote(since)}?{q}", timeout=120)
     series = {}
     for rows in hist:
         if rows:
@@ -76,5 +82,6 @@ def refresh_checks(log=print):
         cam = (hit.get(i) or "").lower()
         c.execute("INSERT OR REPLACE INTO checks VALUES (?,?,?)", (t, int("house" in cam), int("yard" in cam)))
     c.commit()
-    if checks:
-        log(f"safety checks: {len(checks)} read, up to {datetime.fromtimestamp(checks[-1]).astimezone().strftime('%a %H:%M')}")
+    log(f"safety checks: {len(checks)} read since {datetime.fromtimestamp(start).astimezone().strftime('%a %d %b %H:%M')}"
+        f" ({sum(1 for v in hit.values() if 'house' in (v or '').lower())} saw him in his house, {sum(1 for v in hit.values() if 'yard' in (v or '').lower())} outside the walls);"
+        f" {c.execute('SELECT COUNT(*) FROM checks').fetchone()[0]} in all; history had {', '.join(f'{k.split(chr(46))[1]} {len(v)}' for k, v in series.items()) or 'nothing'}")

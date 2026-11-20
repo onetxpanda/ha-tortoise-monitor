@@ -1,3 +1,6 @@
+## 1.2.1
+- The safety checks are read once at start-up too, and every read is logged (how many checks, how many saw him, or why reading failed)
+
 ## 1.2.0
 - Training frames come from the safety checks: every 2 minutes the location automation's LLM says whether he is in his house (and, when he isn't, whether he's outside the pen walls). The add-on reads those answers from Home Assistant's history (it changes nothing in the automation), takes the frame collected at each check's moment, and labels it with the answer and the first pass's boxes: him with his box, or not him. In the yard while he's in his house, look-alikes (such as a garden globe) become hard examples. Where answer and boxes disagree, or the check says he's outside the walls, the frame goes to Review
 - A run uses your answers and these frames, made diverse: frames with him at most one per hour for each part of the picture he's in, none where he hasn't moved in 2 hours; frames without him, an empty scene once per 20 minutes and each look-alike once per hour; your answers count first. Whole unseen days for testing and the per-day cap stay

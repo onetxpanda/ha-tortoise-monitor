@@ -92,6 +92,7 @@ def main():
     Api(det, logger("servers"))
     Site(F, det, sched, log)
     log("page ready on port 8099 (ingress)")
+    threading.Thread(target=lambda: ha.refresh_checks(logger("label")), daemon=True).start()
     retention.check(F, logger("storage"))
     while True:
         time.sleep(3600)
