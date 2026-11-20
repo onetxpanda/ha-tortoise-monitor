@@ -58,7 +58,8 @@ A camera whose detection isn't running shows its entities as unknown.
   add-on's copy of its code between jobs and restarts. A server that stops
   checking in shows as offline; one that fails after an update says so.
 - **Disk**: images live in `/media/tortoise_monitor`. At 95 % full (option
-  `prune_at_percent`) the oldest frames that can be lost go first: clear
+  `prune_at_percent`; measured as Home Assistant's Storage page shows it,
+  used ÷ total) the oldest frames that can be lost go first: clear
   "not him" frames, frames never labelled after a week, unreviewed uncertain
   frames, then clear "him" frames no run used. Frames you answered and frames
   a run used are never deleted. If that isn't enough, collection pauses.

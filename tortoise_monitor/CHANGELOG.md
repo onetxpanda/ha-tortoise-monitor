@@ -1,3 +1,6 @@
+## 1.0.1
+- Fix: disk use is measured the way Home Assistant's Storage page shows it (used ÷ total). 1.0.0 also counted the disk's root reserve (about 5 %) as used, saw 96.8 % where Home Assistant shows 91 %, and paused collection
+
 ## 1.0.0
 - First version: collection from Frigate, review of uncertain frames, the pen outline, training runs that wait for your approval, and live detection with entities in Home Assistant over MQTT (in house, seen in yard, outside pen walls, last seen, last place, last known location picture)
 - Training servers: installed with one line from the Servers page, paired with a one-time code; they do the first pass (OWLv2) and training (CPU or GPU, sharing GPUs through the machine's lease arbiter when it has one), and are the main detector (CPU by default, or GPU)

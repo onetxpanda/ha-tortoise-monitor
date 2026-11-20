@@ -19,8 +19,11 @@ state = {"used_percent": None, "total": None, "free": None, "ours": None, "colle
 
 
 def usage():
+    """Disk use as Home Assistant's Storage page shows it: used / total. (The
+    filesystem's root reserve, about 5 %, counts as free, so at 95 % only the
+    reserve is left.)"""
     st = os.statvfs(config.MEDIA)
-    total = st.f_blocks * st.f_frsize; free = st.f_bavail * st.f_frsize
+    total = st.f_blocks * st.f_frsize; free = st.f_bfree * st.f_frsize
     return 100.0 * (total - free) / total, total, free
 
 
