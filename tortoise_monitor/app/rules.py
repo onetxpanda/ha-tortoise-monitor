@@ -303,10 +303,19 @@ def split_of(x):
 
 
 def dataset(frames, revs, cam):
-    """Training items [(frame, box or None, split)] and their counts. Every
-    frame with him (thinned while he sits still); frames without him: all you
-    rejected, plus automatic ones spread evenly over time up to as many as
-    there are frames with him (min 200)."""
+    """Training items [(frame, box or None, split)] and their counts.
+
+    Frames with him: thinned while he sits still (one per THIN_SECS). Testing
+    is on whole days the model never trains on -- the days with the fewest
+    frames with him, until at least 10 % of them (never over 40 %) -- so the
+    score says how it does on a new day. With only one day so far, sitting
+    sessions are split instead, and the counts say so. No training day may
+    outweigh the rest: each contributes at most as many frames with him as
+    the next-largest training day, or a third of them, whichever is more (a
+    capped day keeps frames spread over its hours).
+    Frames without him: all you rejected, plus automatic ones spread evenly
+    over time up to as many as there are frames with him (min 200), each on
+    the side of the split its day is on."""
     ctx = context(revs, frames)
     pos, neg_you, neg_auto = [], [], []
     left = 0
@@ -335,26 +344,60 @@ def dataset(frames, revs, cam):
         if last is None or x["ts"] - last[0] >= THIN_SECS or iou(b, last[1]) < SAME_IOU:
             kept.append((x, b, src, key)); last = (x["ts"], b)
         prev = (x["ts"], b)
-    h = lambda k: int(hashlib.md5(k.encode()).hexdigest(), 16)
-    sizes = {}
-    for k in (t[3] for t in kept):
-        sizes[k] = sizes.get(k, 0) + 1
-    val_keys = {k for k in sizes if h(k) % 5 == 0}
-    for k in sorted(sizes, key=h):            # about 15% of the frames with him held out
-        if sum(sizes[v] for v in val_keys) >= 0.15 * len(kept):
+    day = lambda x: local(x["ts"]).strftime("%Y-%m-%d")
+    by_day = {}
+    for t in kept:
+        by_day.setdefault(day(t[0]), []).append(t)
+    val_days, n_val = set(), 0
+    for d in sorted(by_day, key=lambda d: (len(by_day[d]), d)):
+        if n_val >= 0.10 * len(kept) or n_val + len(by_day[d]) > 0.40 * len(kept):
             break
-        val_keys.add(k)
-    want = max(len(kept), 200) - len(neg_you)
-    neg_auto.sort(key=lambda x: x["ts"])
-    if want <= 0:
-        picked = []
-    elif want >= len(neg_auto):
-        picked = neg_auto
-    else:
-        step = len(neg_auto) / want
-        picked = [neg_auto[int(i * step)] for i in range(want)]
-    items = [(x, b, "val" if k in val_keys else "train") for x, b, _, k in kept] + [(x, None, split_of(x)) for x in neg_you + picked]
-    c = {"pos": len(kept), "pos_all": len(pos), "pos_you": sum(1 for p in kept if p[2] == "you"), "neg": len(neg_you) + len(picked),
+        val_days.add(d); n_val += len(by_day[d])
+    split_by = "days" if val_days else "sessions"
+    capped = {}
+    if split_by == "days":
+        train_days = {d: v for d, v in by_day.items() if d not in val_days}
+        sizes = sorted((len(v) for v in train_days.values()), reverse=True)
+        if len(sizes) >= 2:
+            cap = max(sizes[1], sum(min(s, sizes[1]) for s in sizes) // 3)
+            for d, v in train_days.items():
+                if len(v) > cap:
+                    v.sort(key=lambda t: t[0]["ts"]); step = len(v) / cap
+                    train_days[d] = [v[int(i * step)] for i in range(cap)]
+                    capped[d] = [len(v), cap]
+        pos_items = [(t[0], t[1], "train", t[2]) for v in train_days.values() for t in v] + \
+                    [(t[0], t[1], "val", t[2]) for d in val_days for t in by_day[d]]
+        nsplit = lambda x: "val" if day(x) in val_days else "train"
+    else:                                     # one day so far: hold out whole sitting sessions
+        h = lambda k: int(hashlib.md5(k.encode()).hexdigest(), 16)
+        sizes = {}
+        for k in (t[3] for t in kept):
+            sizes[k] = sizes.get(k, 0) + 1
+        val_keys = {k for k in sizes if h(k) % 5 == 0}
+        for k in sorted(sizes, key=h):
+            if sum(sizes[v] for v in val_keys) >= 0.15 * len(kept):
+                break
+            val_keys.add(k)
+        pos_items = [(x, b, "val" if k in val_keys else "train", src) for x, b, src, k in kept]
+        nsplit = split_of
+    # Frames without him, chosen for each side of the split from that side's
+    # own days: as many as it has frames with him (at least 200 to train on and
+    # 50 to test on, where there are that many), all you rejected first, then
+    # automatic ones spread evenly over time.
+    picked = []
+    for side, floor in (("train", 200), ("val", 50)):
+        mine = [x for x in neg_you if nsplit(x) == side]
+        auto = sorted((x for x in neg_auto if nsplit(x) == side), key=lambda x: x["ts"])
+        want = max(sum(1 for t in pos_items if t[2] == side), floor) - len(mine)
+        if want >= len(auto):
+            picked += auto
+        elif want > 0:
+            step = len(auto) / want
+            picked += [auto[int(i * step)] for i in range(want)]
+    items = [(x, b, s) for x, b, s, _ in pos_items] + [(x, None, nsplit(x)) for x in neg_you + picked]
+    c = {"pos": len(pos_items), "pos_all": len(pos), "pos_you": sum(1 for p in pos_items if p[3] == "you"), "neg": len(neg_you) + len(picked),
+         "split": split_by, "val_days": sorted(val_days), "capped": capped,
+         "train_days": len({day(x) for x, b, s, _ in pos_items if s == "train"}),
          "neg_you": sum(1 for x in neg_you if revs.get(x["file"])), "left_out": left,
          "train": sum(1 for i in items if i[2] == "train"), "val": sum(1 for i in items if i[2] == "val"),
          "val_pos": sum(1 for i in items if i[2] == "val" and i[1]),

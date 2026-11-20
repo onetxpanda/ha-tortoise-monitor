@@ -208,6 +208,7 @@ function dur(s) {
 function at(ts) { return ts ? new Date(ts * 1000).toLocaleString([], {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : '—'; }
 function ago(ts) { return ts ? dur(Date.now() / 1000 - ts) + ' ago' : ''; }
 function rect(b, cls) { return `<rect class="${cls}" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`; }
+function fmtDay(d) { return new Date(d + 'T12:00').toLocaleDateString([], {weekday: 'short', day: 'numeric', month: 'short'}); }
 function pct(a, b) { return b ? Math.round(100 * a / b) + '%' : '—'; }
 
 /* ---------------- navigation ---------------- */
@@ -689,7 +690,11 @@ function renderRuns(st) {
     h += `<p class="mut">Proposed ${at(r.created)}${r.decided ? ' · decided ' + at(r.decided) : ''}${r.started ? ' · started ' + at(r.started) : ''}${r.finished ? ' · ended ' + at(r.finished) : ''}</p>`;
     if (k.pos !== undefined) h += `<p>Frames with him: <b>${k.pos}</b> (${k.pos_you} checked by you) · without him: <b>${k.neg}</b> (${k.neg_you} checked by you)</p>
       ${k.pos_all > k.pos ? `<p class="mut">Thinned from ${k.pos_all}: while he sits still, one frame per 5 min. A sitting session is either all training or all testing.</p>` : ''}
-      <p class="mut">Held out for testing: ${k.val} (${k.val_pos} with him) · uncertain, not used: ${k.left_out}</p>`;
+      <p class="mut">${k.split === 'days'
+        ? `Tested on ${k.val_days.length} whole day${k.val_days.length === 1 ? '' : 's'} it never trains on: ${k.val} frames (${k.val_pos} with him) from ${k.val_days.map(fmtDay).join(', ')}`
+        : k.split === 'sessions' ? `Held out for testing: ${k.val} (${k.val_pos} with him), whole sitting sessions — only one day with him so far, so it can't be tested on another day`
+        : `Held out for testing: ${k.val} (${k.val_pos} with him)`} · uncertain, not used: ${k.left_out}</p>
+      ${k.train_days ? `<p class="mut">Trains on frames with him from ${k.train_days} day${k.train_days === 1 ? '' : 's'}${k.capped && Object.keys(k.capped).length ? ` · capped so no day outweighs the rest: ${Object.entries(k.capped).map(([d, ab]) => `${fmtDay(d)} ${ab[0]} → ${ab[1]}`).join(', ')}` : ''}</p>` : ''}`;
     h += `<p class="mut">YOLO11n starting from COCO weights · ${cfg.imgsz} px · up to ${cfg.epochs} epochs (stops after ${cfg.patience} without gain)${r.status !== 'proposed' ? ` · on ${cfg.device === 'gpu' ? 'a GPU' : 'a CPU'}${r.server_name ? ' of ' + esc(r.server_name) : ''}` : ''}</p>`;
     const est = d => r.estimate && r.estimate[d] ? `about ${dur(r.estimate[d].secs)} <span class="mut">(${r.estimate[d].measured ? 'from the last run' : 'rough guess'})</span>` : '';
     if (r.status === 'proposed') {

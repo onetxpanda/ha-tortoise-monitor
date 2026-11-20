@@ -1,3 +1,9 @@
+## 1.1.0
+- Training runs are tested on whole days they never train on (the days with the fewest frames of him, until at least 10 % of them; never over 40 %), so a run's score says how it does on a new day. With only one day of him so far, whole sitting sessions are held out instead, and the run says so
+- No single day may outweigh the rest of a training set: each day gives at most as many frames of him as the next-largest day, or a third of them once there are enough days; a capped day keeps frames spread over its hours
+- Frames without him are chosen for training and for testing separately, from each side's own days, so the false-alarm figure is measured on real test days
+- The run page shows the test days, how many days it trains on, and which days were capped
+
 ## 1.0.2
 - Training servers: the planned exit after installing an update (code 75) is a normal exit for systemd, so the service log no longer reports "Failed" on every update; servers pick up the changed unit with this update
 
