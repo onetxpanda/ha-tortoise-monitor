@@ -168,12 +168,11 @@ class Site:
         self.F.refresh(); c = db.connect(); revs = rules.reviews(c)
         k = rules.counts(self.F.frames, revs)
         cams = {}
+        targets = servers.label_targets(c)
         for cam in config.cameras():
             n = c.execute("SELECT COUNT(*), COALESCE(SUM(ts > ?), 0), MAX(CASE WHEN source='continuous' THEN ts END) FROM frames WHERE camera=? AND deleted IS NULL",
                           (time.time() - 86400, cam)).fetchone()
-            waiting = sum(1 for r in c.execute("SELECT camera, source, ts FROM frames f WHERE camera=? AND deleted IS NULL AND NOT EXISTS"
-                                               " (SELECT 1 FROM owl o WHERE o.file=f.file AND o.mode='full')", (cam,))
-                          if rules.wanted(r["camera"], r["source"], r["ts"]))
+            waiting = sum(1 for r in targets if r["camera"] == cam)
             cams[cam] = {"name": cam_name(cam), "role": rules.role(cam), "collected": n[0], "collected_24h": n[1], "newest": n[2],
                          "waiting_first_pass": waiting, "counts": k.get(cam, {}), "outline": db.kv_get(f"outline:{cam}", None, c) if rules.outlined(cam) else None,
                          "model": db.kv_get(f"model:{cam}", None, c)}

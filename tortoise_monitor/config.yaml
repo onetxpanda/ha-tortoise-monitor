@@ -1,6 +1,6 @@
 name: "Tortoise Monitor"
 description: "Finds the tortoise on the house and yard cameras, tells Home Assistant where he is, and manages the detector's training data and training."
-version: "1.1.0"
+version: "1.2.0"
 slug: "tortoise_monitor"
 url: "https://github.com/onetxpanda/ha-tortoise-monitor"
 init: false
@@ -32,7 +32,9 @@ options:
   restream_url: "rtsp://ccab4aaf-frigate-fa:8554"
   server_restream_url: ""
   advertise_url: ""
-  record_entity: "binary_sensor.tortoise_outside"
+  check_entity: "input_datetime.tortoise_vision_last_check"
+  sighting_entity: "input_datetime.tortoise_last_seen"
+  sighting_camera_entity: "input_text.tortoise_last_seen_camera"
   detect_every_s: 5
   prune_at_percent: 95
   cameras:
@@ -50,7 +52,9 @@ schema:
   restream_url: str
   server_restream_url: str?
   advertise_url: str?
-  record_entity: str?
+  check_entity: str?
+  sighting_entity: str?
+  sighting_camera_entity: str?
   detect_every_s: "int(2,60)"
   prune_at_percent: "int(50,99)"
   cameras:

@@ -45,9 +45,19 @@ A camera whose detection isn't running shows its entities as unknown.
 - **Collection**: hourly, frames from Frigate's recordings through Frigate's
   API, plus frames and snapshots from Frigate's events (other animals and
   people, as examples of "not him").
-- **First pass**: a training server puts OWLv2 boxes on new frames. Where the
-  first pass, the frames around it, Home Assistant's in/out record and the
-  detector in use agree, a frame is used as it is; otherwise it goes to Review.
+- **Training frames come from the safety checks**: every 2 minutes the
+  location automation asks the local LLM whether he is in his house (and, when
+  he isn't, whether he is outside the pen walls). The add-on reads those
+  answers from Home Assistant's history, takes the frame collected at each
+  check's moment, and a training server puts OWLv2 boxes on it (the first
+  pass). Answer and boxes together label the frame: him with his box, or not
+  him (in the yard while he's in his house, look-alikes such as a garden globe
+  become hard examples). Where they disagree, or the check says he is outside
+  the walls, the frame goes to Review. A run uses your answers and these
+  frames, made diverse: frames with him at most one per hour for each part of
+  the picture he's in (none where he hasn't moved in 2 hours), frames without
+  him one per hour; it is tested on whole days it never trains on, and no day
+  may outweigh the rest.
 - **Training**: YOLO11n, on a training server, after your approval. The model
   is sent back for OpenVINO (half precision, 960×544 for the yard).
 - **Detection**: keyframes from Frigate's restream (never the cameras
@@ -72,7 +82,7 @@ A camera whose detection isn't running shows its entities as unknown.
 | `restream_url` | Frigate's restream, for the add-on's own detection |
 | `server_restream_url` | the restream as training servers reach it (empty: `rtsp://<this host>:8554`) |
 | `advertise_url` | how training servers reach the add-on (empty: `http://<this host>:8765`) |
-| `record_entity` | binary sensor that is on while he is out of his house (used to judge frames) |
+| `check_entity`, `sighting_entity`, `sighting_camera_entity` | the location automation's helpers: set at every safety check, set when a check saw him, and which camera saw him |
 | `detect_every_s` | seconds between detections per camera |
 | `prune_at_percent` | disk use at which old frames are deleted |
 | `cameras` | Frigate camera names, each with its role (`yard` or `house`), collection interval and model size |

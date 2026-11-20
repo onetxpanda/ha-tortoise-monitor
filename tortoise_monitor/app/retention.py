@@ -4,10 +4,11 @@
 run used, models, the database.
 
 Tiers, cheapest first:
-  1 nothing there      frames clear without review as "not him", unused by any run
-  2 never labelled     frames still waiting for the first pass after 7 days
-  3 not reviewed       uncertain frames you haven't reviewed (oldest first)
-  4 him, unused        frames clear without review as "him", unused by any run
+  1 not used           frames no safety check labels and Review doesn't ask
+                       about, and frames still without first boxes after 7 days
+  2 nothing there      safety-check frames without him, unused by any run
+  3 not reviewed       frames Review asks about that you haven't answered
+  4 him, unused        safety-check frames with him, unused by any run
   5 old detections     production detection rows older than 90 days
 If all of that is gone and the disk is still over the limit, collection stops
 until there is room again (shown on the Storage page)."""
@@ -45,7 +46,7 @@ def check(frames_cache, log=print):
     F = frames_cache.frames
     revs = rules.reviews(c); ctx = rules.context(revs, F)
     keep = rules.protected_files(c)
-    tiers = {"nothing there": [], "never labelled": [], "not reviewed": [], "him, unused": []}
+    tiers = {"not used": [], "nothing there": [], "not reviewed": [], "him, unused": []}
     week = time.time() - 7 * 86400
     for r in c.execute("SELECT file, ts, added FROM frames WHERE deleted IS NULL ORDER BY ts"):
         f = r["file"]
@@ -54,14 +55,16 @@ def check(frames_cache, log=print):
         x = F.get(f)
         if x is None:
             if r["added"] < week:
-                tiers["never labelled"].append(f)
+                tiers["not used"].append(f)
             continue
         lab, _, src = rules.final(x, revs.get(f), ctx)
-        if lab == "neg" and src != "you":
+        if lab == "unused":
+            tiers["not used"].append(f)
+        elif lab == "neg" and src != "you":
             tiers["nothing there"].append(f)
         elif lab == "uncertain":
             tiers["not reviewed"].append(f)
-        elif lab == "pos" and src in ("auto", "same"):
+        elif lab == "pos" and src == "check":
             tiers["him, unused"].append(f)
     for tier, files in tiers.items():
         n = b = 0

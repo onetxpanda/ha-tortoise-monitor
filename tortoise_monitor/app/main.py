@@ -14,7 +14,7 @@ class Scheduler:
     """collect   hourly, a minute past the hour (Frigate's recordings)
        label     every minute: first-pass batches queued for the servers
        pass      hourly at half past: the detector in use over collected frames
-       and, quietly: the in/out record hourly, disk space every 10 minutes,
+       and, quietly: the safety checks' answers and disk space every 10 minutes,
        run proposals and lost-job checks every minute."""
 
     def __init__(self, F, mqtt, log):
@@ -57,8 +57,8 @@ class Scheduler:
                     self.spawn(lambda: passes.run_once(logger("pass"), 900))
                 if self.due("label", 60) and self.enabled("label"):
                     servers.make_label_jobs(self.F)
-                if self.due("record", 3600, 300):
-                    self.spawn(lambda: ha.refresh_record(logger("record")))
+                if self.due("checks", 600, 120):
+                    self.spawn(lambda: ha.refresh_checks(logger("label")))
                 if self.due("retention", 600):
                     retention.check(self.F, logger("storage"))
                 if self.due("runs", 60):

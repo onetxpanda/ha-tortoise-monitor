@@ -27,7 +27,10 @@ DEFAULTS = {
         {"name": "yard_camera", "role": "yard", "collect_every_s": 30, "imgsz": 960},
         {"name": "tortoise_camera", "role": "house", "collect_every_s": 60, "imgsz": 640},
     ],
-    "record_entity": "binary_sensor.tortoise_outside",     # on = he is out of his house
+    # the safety checks (the location automation's LLM answers), read from Home Assistant's history:
+    "check_entity": "input_datetime.tortoise_vision_last_check",      # set at every check that got an answer
+    "sighting_entity": "input_datetime.tortoise_last_seen",           # set when a check saw him
+    "sighting_camera_entity": "input_text.tortoise_last_seen_camera", # "House camera" / "Yard camera"
     "detect_every_s": 5,
     "server_port": 8765,
     "advertise_url": "",                                   # how training servers reach this add-on ("" = http://<this host>:server_port)

@@ -244,25 +244,33 @@ def done(srv, jid, body):
 
 
 # ---------------- scheduling ----------------
+def label_targets(c):
+    """Frames that need first boxes: each safety check's frame, and Frigate's
+    event snapshots (the rest of the collected frames aren't used)."""
+    at_check = rules.check_frames(c)
+    return [r for r in c.execute("SELECT f.file, f.camera, f.source, f.ts FROM frames f WHERE f.deleted IS NULL AND NOT EXISTS"
+                                 " (SELECT 1 FROM owl o WHERE o.file=f.file AND o.mode='full') ORDER BY f.ts DESC")
+            if r["file"] in at_check or r["source"] == "event_snapshot"]
+
+
 def make_label_jobs(F):
-    """Queue first-pass batches for frames that have none (newest first), then
-    the tiled pass for yard frames the first look was unsure about."""
+    """Queue first-pass batches for the frames that need them (newest first),
+    then the tiled pass for yard frames the first look was unsure about."""
     c = db.connect()
     if c.execute("SELECT 1 FROM jobs WHERE kind='label' AND status IN ('queued','running')").fetchone():
         return
     last = c.execute("SELECT status, finished FROM jobs WHERE kind='label' ORDER BY id DESC LIMIT 1").fetchone()
     if last and last["status"] == "failed" and (last["finished"] or 0) > time.time() - 600:
         return                       # the last batch failed: try again 10 minutes after it
-    rows = c.execute("SELECT f.file, f.camera, f.source, f.ts FROM frames f WHERE f.deleted IS NULL AND NOT EXISTS"
-                     " (SELECT 1 FROM owl o WHERE o.file=f.file AND o.mode='full') ORDER BY f.ts DESC").fetchall()
-    todo = [{"file": r["file"], "mode": "full"} for r in rows if rules.wanted(r["camera"], r["source"], r["ts"])][:LABEL_BATCH]
+    todo = [{"file": r["file"], "mode": "full"} for r in label_targets(c)][:LABEL_BATCH]
     if not todo:
         best = {}
         for r in c.execute("SELECT file, dets FROM owl WHERE mode='full'"):
             best[r["file"]] = max((d[1] for d in json.loads(r["dets"]) if d[0] in ("tortoise", "turtle")), default=0)
         tiled = {r["file"] for r in c.execute("SELECT file FROM owl WHERE mode='tiles'")}
+        at_check = rules.check_frames(c)
         for r in c.execute("SELECT file, camera FROM frames WHERE deleted IS NULL AND source != 'event_snapshot' ORDER BY ts DESC"):
-            if rules.role(r["camera"]) == "yard" and r["file"] not in tiled and 0.08 <= best.get(r["file"], 0) < rules.POS:
+            if r["file"] in at_check and rules.role(r["camera"]) == "yard" and r["file"] not in tiled and 0.08 <= best.get(r["file"], 0) < rules.POS:
                 todo.append({"file": r["file"], "mode": "tiles"})
                 if len(todo) >= TILES_BATCH:
                     break

@@ -1,3 +1,11 @@
+## 1.2.0
+- Training frames come from the safety checks: every 2 minutes the location automation's LLM says whether he is in his house (and, when he isn't, whether he's outside the pen walls). The add-on reads those answers from Home Assistant's history (it changes nothing in the automation), takes the frame collected at each check's moment, and labels it with the answer and the first pass's boxes: him with his box, or not him. In the yard while he's in his house, look-alikes (such as a garden globe) become hard examples. Where answer and boxes disagree, or the check says he's outside the walls, the frame goes to Review
+- A run uses your answers and these frames, made diverse: frames with him at most one per hour for each part of the picture he's in, none where he hasn't moved in 2 hours; frames without him, an empty scene once per 20 minutes and each look-alike once per hour; your answers count first. Whole unseen days for testing and the per-day cap stay
+- The first pass only labels the frames that are used (each check's frame and Frigate's event snapshots), about a quarter of the collected frames
+- Review asks only about those frames (one per camera, hour and reason), newest first
+- At 95 % full, frames nothing uses are deleted first
+- Options: `check_entity`, `sighting_entity` and `sighting_camera_entity` (the location automation's helpers) replace `record_entity`
+
 ## 1.1.0
 - Training runs are tested on whole days they never train on (the days with the fewest frames of him, until at least 10 % of them; never over 40 %), so a run's score says how it does on a new day. With only one day of him so far, whole sitting sessions are held out instead, and the run says so
 - No single day may outweigh the rest of a training set: each day gives at most as many frames of him as the next-largest day, or a third of them once there are enough days; a capped day keeps frames spread over its hours

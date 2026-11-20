@@ -328,7 +328,7 @@ function renderSide() {
 /* ---------------- background jobs: one page each ---------------- */
 const JOB_INFO = {
   collect: 'Copies frames from Frigate every hour: frames every few seconds from each camera’s recordings (night-time yard frames only one per 5 min), plus frames and snapshots from Frigate events. Frigate keeps its recordings about a day, so anything not collected within a day is gone.',
-  label: 'Hands batches of newly collected frames to a training server, which puts first boxes on them with OWLv2 (on a GPU only while nobody else is using one), then takes a closer, tiled look at yard frames the first look was unsure about. Frames it can’t settle go to Review.',
+  label: 'Hands batches of frames to a training server, which puts first boxes on them with OWLv2 (on a GPU only while nobody else is using one): the frame at each safety check’s moment, and Frigate’s event snapshots. A tiled second look follows for yard frames the first look was unsure about. The safety check’s answer and these boxes label each frame; where they disagree, it goes to Review.',
   pass: 'Runs the detector in use over the collected frames here in the add-on (Intel GPU, else CPU), hourly. Frames where it and the first pass disagree go to Review.',
 };
 async function loadJobs() { await refreshSide(); renderJobs(); loadJobLog(); }
@@ -450,7 +450,7 @@ function renderReview(st) {
   S.revCounts = k; renderSide();
   const cams = S.rcam ? [S.rcam] : Object.keys(CAM), sum = f => cams.reduce((a, c) => a + f(k[c]), 0);
   $('#rv-title').textContent = 'Review · ' + (S.rcam ? CAM[S.rcam] : 'both cameras');
-  $('#rv-count').textContent = `${sum(x => x.to_review)} left · checked by you: ${sum(x => x.pos_you + x.neg_you + x.skipped)} · clear without review: ${sum(x => x.pos_auto + x.pos_same)} with him, ${sum(x => x.neg_auto + x.neg_match)} without`;
+  $('#rv-count').textContent = `${sum(x => x.to_review)} left · checked by you: ${sum(x => x.pos_you + x.neg_you + x.skipped)} · labelled by the safety checks: ${sum(x => x.pos_check)} with him, ${sum(x => x.neg_check)} without`;
   $('#rv-empty').hidden = !!it; $('#rv-main').hidden = !it;
   if (!it) return;
   const [W, H] = it.size;
@@ -689,10 +689,10 @@ function renderRuns(st) {
     let h = `<div class="card"><h3>${focus ? `${esc(r.camName)} · run ${r.id}` : `<a href="#training/${r.id}" style="color:inherit">${esc(r.camName)} · run ${r.id}</a>`} <span class="pill ${cls}">${label}</span>${r.in_use ? ' <span class="pill ok">In use</span>' : ''}</h3>`;
     h += `<p class="mut">Proposed ${at(r.created)}${r.decided ? ' · decided ' + at(r.decided) : ''}${r.started ? ' · started ' + at(r.started) : ''}${r.finished ? ' · ended ' + at(r.finished) : ''}</p>`;
     if (k.pos !== undefined) h += `<p>Frames with him: <b>${k.pos}</b> (${k.pos_you} checked by you) · without him: <b>${k.neg}</b> (${k.neg_you} checked by you)</p>
-      ${k.pos_all > k.pos ? `<p class="mut">Thinned from ${k.pos_all}: while he sits still, one frame per 5 min. A sitting session is either all training or all testing.</p>` : ''}
+      ${k.pos_all > k.pos || k.neg_all > k.neg ? `<p class="mut">Made diverse from ${k.pos_all} with him and ${k.neg_all ?? k.neg} without: with him, one per hour for each part of the picture (none where he hasn't moved in 2 hours); without him, an empty scene once per 20 minutes and each look-alike once per hour. Your answers count first.</p>` : ''}
       <p class="mut">${k.split === 'days'
         ? `Tested on ${k.val_days.length} whole day${k.val_days.length === 1 ? '' : 's'} it never trains on: ${k.val} frames (${k.val_pos} with him) from ${k.val_days.map(fmtDay).join(', ')}`
-        : k.split === 'sessions' ? `Held out for testing: ${k.val} (${k.val_pos} with him), whole sitting sessions — only one day with him so far, so it can't be tested on another day`
+        : k.split === 'hours' ? `Held out for testing: ${k.val} (${k.val_pos} with him), whole hours — only one day with him so far, so it can't be tested on another day`
         : `Held out for testing: ${k.val} (${k.val_pos} with him)`} · uncertain, not used: ${k.left_out}</p>
       ${k.train_days ? `<p class="mut">Trains on frames with him from ${k.train_days} day${k.train_days === 1 ? '' : 's'}${k.capped && Object.keys(k.capped).length ? ` · capped so no day outweighs the rest: ${Object.entries(k.capped).map(([d, ab]) => `${fmtDay(d)} ${ab[0]} → ${ab[1]}`).join(', ')}` : ''}</p>` : ''}`;
     h += `<p class="mut">YOLO11n starting from COCO weights · ${cfg.imgsz} px · up to ${cfg.epochs} epochs (stops after ${cfg.patience} without gain)${r.status !== 'proposed' ? ` · on ${cfg.device === 'gpu' ? 'a GPU' : 'a CPU'}${r.server_name ? ' of ' + esc(r.server_name) : ''}` : ''}</p>`;
