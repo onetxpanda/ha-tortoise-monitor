@@ -1,3 +1,11 @@
+# Build the web UI (web/src/app.jsx + React) into one bundle; versions pinned by web/package-lock.json
+FROM node:22.12.0-alpine AS webui
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/src ./src
+RUN npm run build
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -23,6 +31,8 @@ RUN pip3 install --break-system-packages --no-cache-dir -r /app/requirements.txt
 
 COPY config.yaml /app/config.yaml
 COPY app /app/app
+COPY web/index.html /app/app/web/index.html
+COPY --from=webui /web/dist/app.js /app/app/web/app.js
 COPY worker /app/worker
 COPY run.sh /run.sh
 RUN chmod +x /run.sh && find /app -name __pycache__ -prune -exec rm -rf {} +

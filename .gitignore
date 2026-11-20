@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+node_modules
+tortoise_monitor/web/dist/
+# the page and its bundle are put here by the image build (from tortoise_monitor/web)
+tortoise_monitor/app/web/

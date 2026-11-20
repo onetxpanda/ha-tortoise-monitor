@@ -1,3 +1,10 @@
+## 1.3.0
+- The page is now a React app, built into the image the same way as the YouTube Live Manager's UI. Data still refreshes every 10 seconds, but only what changed is updated: no more flicker, open drop-downs stay open and pictures don't reload
+- The page says when it has lost contact with the add-on and greys out what it last showed, until it is back
+- Fix: Review failed to load ("'hint'") since 1.2.0
+- Fix: the Storage page listed the old deletion order; it now lists the 1.2 one
+- Undo is available on Review when nothing is left to review
+
 ## 1.2.2
 - Fix: the safety checks were read from only one day of history (Home Assistant's history API stops a day after the start unless told when to end), so none were found; they are now read up to the present
 

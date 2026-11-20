@@ -17,7 +17,7 @@ def when(ts):
 def item_json(x, revs):
     r = revs.get(x["file"])
     return {"file": x["file"], "cam": x["cam"], "camName": cam_name(x["cam"]), "ts": x["ts"], "when": when(x["ts"]),
-            "size": x["size"], "cands": x["cands"], "hint": x["hint"], "why": rules.why(x),
+            "size": x["size"], "cands": x["cands"], "hint": x.get("hint"), "why": rules.why(x),
             "review": {"verdict": r["verdict"], "box": json.loads(r["box"]) if r["box"] else None} if r else None}
 
 
@@ -195,6 +195,9 @@ class Site:
         if p in ("/", "/index.html"):
             with open(os.path.join(config.WEB, "index.html"), "rb") as f:
                 return h.send(200, f.read(), "text/html; charset=utf-8")
+        if p == "/app.js":     # the React UI, built from web/src at image build time
+            with open(os.path.join(config.WEB, "app.js"), "rb") as f:
+                return h.send(200, f.read(), "text/javascript; charset=utf-8")
         if p == "/img":
             im = Image.open(self.frame_path(q["f"])); w = int(q.get("w", 1600))
             if im.width > w:
