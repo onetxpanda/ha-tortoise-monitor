@@ -63,7 +63,9 @@ def _refresh_checks(log):
     last = c.execute("SELECT MAX(ts) FROM checks").fetchone()[0]
     start = (last - 600) if last else time.time() - 10 * 86400
     since = datetime.fromtimestamp(start, timezone.utc).isoformat()
-    q = urllib.parse.urlencode({"filter_entity_id": ",".join(ents), "minimal_response": "1", "no_attributes": "1"})
+    # end_time must be given: without it Home Assistant returns only one day from the start
+    q = urllib.parse.urlencode({"filter_entity_id": ",".join(ents), "end_time": datetime.now(timezone.utc).isoformat(),
+                                "minimal_response": "1", "no_attributes": "1"})
     hist = _get(f"http://supervisor/core/api/history/period/{urllib.parse.quote(since)}?{q}", timeout=120)
     series = {}
     for rows in hist:

@@ -1,3 +1,6 @@
+## 1.2.2
+- Fix: the safety checks were read from only one day of history (Home Assistant's history API stops a day after the start unless told when to end), so none were found; they are now read up to the present
+
 ## 1.2.1
 - The safety checks are read once at start-up too, and every read is logged (how many checks, how many saw him, or why reading failed)
 
