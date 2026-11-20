@@ -1,0 +1,5 @@
+ultralytics==8.4.216
+openvino==2025.4.0
+transformers==5.23.0
+pillow
+numpy

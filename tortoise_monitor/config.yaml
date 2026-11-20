@@ -1,0 +1,60 @@
+name: "Tortoise Monitor"
+description: "Finds the tortoise on the house and yard cameras, tells Home Assistant where he is, and manages the detector's training data and training."
+version: "1.0.0"
+slug: "tortoise_monitor"
+url: "https://github.com/onetxpanda/ha-tortoise-monitor"
+init: false
+arch:
+  - amd64
+startup: application
+boot: auto
+
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:turtle
+panel_title: "Tortoise Monitor"
+
+hassio_api: true
+homeassistant_api: true
+services:
+  - mqtt:want
+video: true
+map:
+  - media:rw
+
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: "Training servers (installer, check-ins, jobs)"
+
+options:
+  frigate_url: "http://ccab4aaf-frigate-fa:5000"
+  restream_url: "rtsp://ccab4aaf-frigate-fa:8554"
+  server_restream_url: ""
+  advertise_url: ""
+  record_entity: "binary_sensor.tortoise_outside"
+  detect_every_s: 5
+  prune_at_percent: 95
+  cameras:
+    - name: yard_camera
+      role: yard
+      collect_every_s: 30
+      imgsz: 960
+    - name: tortoise_camera
+      role: house
+      collect_every_s: 60
+      imgsz: 640
+
+schema:
+  frigate_url: url
+  restream_url: str
+  server_restream_url: str?
+  advertise_url: str?
+  record_entity: str?
+  detect_every_s: "int(2,60)"
+  prune_at_percent: "int(50,99)"
+  cameras:
+    - name: str
+      role: "list(yard|house)"
+      collect_every_s: "int(10,3600)"
+      imgsz: "int(320,1280)"

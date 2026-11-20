@@ -1,0 +1,4 @@
+openvino==2026.4.1
+numpy
+pillow
+paho-mqtt==2.2.0
