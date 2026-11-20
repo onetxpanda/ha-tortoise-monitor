@@ -7,7 +7,9 @@ Wants=network-online.target
 WorkingDirectory=__BASE__
 Environment=PYTHONUNBUFFERED=1 HOME=/root TM_SERVER_HOME=__BASE__ YOLO_CONFIG_DIR=__BASE__/cache/ultralytics
 ExecStart=__BASE__/venv/bin/python __BASE__/current/tortoise_worker.py run
-# exits with 75 after installing an update from the add-on: restart into it
+# exits with 75 after installing an update from the add-on: a normal exit
+# (not logged as a failure), and Restart=always starts the new version
+SuccessExitStatus=75
 Restart=always
 RestartSec=10
 
