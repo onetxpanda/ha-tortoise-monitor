@@ -1,3 +1,7 @@
+## 2.0.0
+- New Heatmap page: where he was on a day, on the yard (or house) camera's picture with the pen walls. As heat, red where he spent the most time, or as dots coloured by time of day. It says how often and for about how long he was seen, when he was first and last seen, and how his time split between inside and outside the pen walls. Pick any day of the last 90; today's fills in as he's seen
+- It draws on the sightings the detector has kept since 1.0.0, so the days since the add-on was installed are there already
+
 ## 1.3.0
 - The page is now a React app, built into the image the same way as the YouTube Live Manager's UI. Data still refreshes every 10 seconds, but only what changed is updated: no more flicker, open drop-downs stay open and pictures don't reload
 - The page says when it has lost contact with the add-on and greys out what it last showed, until it is back

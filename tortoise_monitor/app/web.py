@@ -1,6 +1,7 @@
 """The add-on's page, through Home Assistant's ingress (Home Assistant does
 the login). All paths are relative: ingress serves the page under a prefix."""
 import io, json, os, re, threading, time, traceback
+from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -124,6 +125,53 @@ class Site:
                 "suggestion": [list(p) for p in hull(feet)] if len(feet) >= 3 else None, "feet": len(feet),
                 "feet_pts": feet[::max(1, len(feet) // 1500)]}
 
+    def heatmap_state(self, cam, day=None):
+        """Where he was on one day: every sighting's foot point (fractions of the
+        frame) with its time, over a frame of that day. The days with sightings
+        come from the hourly cycle counts (as many as there are detection rows)."""
+        if cam not in config.cameras():
+            raise ValueError("unknown camera")
+        c = db.connect()
+        days = {}
+        for r in c.execute("SELECT hour, seen FROM cycles WHERE camera=? AND seen > 0 AND hour >= ? ORDER BY hour DESC",
+                           (cam, time.time() - 91 * 86400)):
+            d = rules.local(r["hour"]).strftime("%Y-%m-%d")
+            days[d] = days.get(d, 0) + r["seen"]
+        day_list = [{"day": d, "n": n} for d, n in sorted(days.items(), reverse=True)]
+        if day is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError("bad day")
+        day = day or (day_list[0]["day"] if day_list else rules.local(time.time()).strftime("%Y-%m-%d"))
+        d0 = datetime.strptime(day, "%Y-%m-%d")
+        start, end = d0.timestamp(), (d0 + timedelta(days=1)).timestamp()     # local midnights
+        rows = c.execute("SELECT ts, fx, fy, place FROM detections WHERE camera=? AND ts >= ? AND ts < ? ORDER BY ts",
+                         (cam, start, end)).fetchall()
+        every = float(config.options().get("detect_every_s", 5))
+        seen_s, places = 0.0, {}
+        for i, r in enumerate(rows):   # time in view: the gap to the next sighting, at most two cycles
+            gap = rows[i + 1]["ts"] - r["ts"] if i + 1 < len(rows) else every
+            seen_s += min(max(gap, 0.0), 2 * every)
+            places[r["place"] or "seen"] = places.get(r["place"] or "seen", 0) + 1
+        # The background: that day's frame nearest 1 pm; else the newest daytime
+        # frame (8 am to 5 pm), else the newest there is.
+        noon = start + 13 * 3600
+        fr = c.execute("SELECT file, ts, w, h FROM frames WHERE camera=? AND source='continuous' AND deleted IS NULL AND ts >= ? AND ts < ? "
+                       "AND w IS NOT NULL ORDER BY ABS(ts - ?) LIMIT 1", (cam, start, end, noon)).fetchone()
+        if not fr:
+            newest = c.execute("SELECT file, ts, w, h FROM frames WHERE camera=? AND source='continuous' AND deleted IS NULL AND w IS NOT NULL "
+                               "ORDER BY ts DESC LIMIT 2000", (cam,)).fetchall()
+            fr = next((r for r in newest if 8 <= rules.local(r["ts"]).hour < 17), newest[0] if newest else None)
+        if fr:
+            size = [fr["w"], fr["h"]]
+        else:      # no frame kept: the size the detector saw
+            d = c.execute("SELECT w, h FROM detections WHERE camera=? AND w IS NOT NULL ORDER BY ts DESC LIMIT 1", (cam,)).fetchone()
+            size = [d["w"], d["h"]] if d else None
+        return {"cam": cam, "camName": cam_name(cam), "role": rules.role(cam), "days": day_list, "day": day,
+                "points": [[round(r["fx"], 4), round(r["fy"], 4), round(r["ts"] - start), r["place"]] for r in rows],
+                "every": every, "seen_s": round(seen_s), "places": places,
+                "first": rows[0]["ts"] if rows else None, "last": rows[-1]["ts"] if rows else None,
+                "frame": {"file": fr["file"], "when": when(fr["ts"]), "same_day": start <= fr["ts"] < end} if fr else None,
+                "size": size, "outline": rules.outline(cam, c) if rules.outlined(cam) else None}
+
     def run_json(self, c, r, revs):
         d = dict(r); d.pop("items", None)
         for k in ("config", "counts", "result", "progress"):
@@ -226,6 +274,7 @@ class Site:
             "/api/outline": lambda: self.outline_state(q["cam"]),
             "/api/runs": lambda: self.runs_state(),
             "/api/results": lambda: self.results_state(q["cam"]),
+            "/api/heatmap": lambda: self.heatmap_state(q["cam"], q.get("day")),
             "/api/live": lambda: self.detection.status(),
             "/api/servers": lambda: {"servers": servers.servers(), "install": servers.install_command(),
                                      "pair_expires": servers.pair_code()["expires"], "main": (servers.main_detector() or {}).get("id"),

@@ -120,7 +120,7 @@ const camName = (ov, c) => (ov && ov.cams[c] && ov.cams[c].name) || c;
 const countsOf = (ov, revCounts) => revCounts || Object.fromEntries(Object.entries(ov.cams).map(([c, v]) => [c, v.counts]));
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-const PAGES = { review: 'Review', outline: 'Pen outline', training: 'Training', results: 'Results', live: 'Live', servers: 'Training servers', jobs: 'Background jobs', storage: 'Storage' };
+const PAGES = { review: 'Review', outline: 'Pen outline', training: 'Training', results: 'Results', heatmap: 'Heatmap', live: 'Live', servers: 'Training servers', jobs: 'Background jobs', storage: 'Storage' };
 const JOBS = { collect: 'Collection', label: 'First pass', pass: 'Detector pass' };
 function parseHash() {
   const [page, arg] = (location.hash || '#review').slice(1).split('/');
@@ -187,6 +187,8 @@ function Nav({ route, onPick }) {
       : o.runs.running.length ? <Badge cls="acc">{o.runs.running.length > 1 ? o.runs.running.length + ' running' : 'running'}</Badge> : null,
     needs: open_.length > 0, kids: [['#training', 'All runs', null], ...open_.map(r => [`#training/${r.id}`, `${camName(o, r.camera)} run ${r.id}`, <Sub>{runLab(r)}</Sub>])] });
   items.push({ key: 'results', href: '#results', label: 'Results', kids: all.map(c => [`#results/${c}`, camName(o, c), <Sub>{o.cams[c].model ? 'run ' + o.cams[c].model.run : 'no detector'}</Sub>]) });
+  const yardFirst = [...camsOf(o, 'yard'), ...all.filter(c => !camsOf(o, 'yard').includes(c))];
+  items.push({ key: 'heatmap', href: '#heatmap', label: 'Heatmap', kids: yardFirst.map(c => [`#heatmap/${c}`, camName(o, c), null]) });
   const ls = (o.detection || {}).last_seen;
   items.push({ key: 'live', href: '#live', label: 'Live', badge: ls ? <Sub>{PLACE_SHORT[ls.place] || ''}</Sub> : null, kids: [] });
   const srv = o.servers || [], up = srv.filter(s => s.online);
@@ -657,6 +659,131 @@ function Results({ cam }) {
   </>;
 }
 
+// ── Heatmap ───────────────────────────────────────────────────────────────────
+// Where he was on one day: his foot points as heat (time spent) or as dots
+// coloured by time of day, over a frame of that day.
+const HEAT_STOPS = [[0, [40, 60, 255]], [0.35, [0, 220, 255]], [0.6, [70, 255, 60]], [0.8, [255, 225, 0]], [1, [255, 40, 0]]];
+function heatColor(v) {
+  for (let i = 1; i < HEAT_STOPS.length; i++) {
+    if (v <= HEAT_STOPS[i][0]) {
+      const [a, ca] = HEAT_STOPS[i - 1], [b, cb] = HEAT_STOPS[i], t = (v - a) / (b - a);
+      return ca.map((x, j) => Math.round(x + (cb[j] - x) * t));
+    }
+  }
+  return HEAT_STOPS[HEAT_STOPS.length - 1][1];
+}
+const HEAT_CSS = 'linear-gradient(90deg,' + HEAT_STOPS.map(([v, c]) => `rgb(${c.join(',')}) ${v * 100}%`).join(',') + ')';
+// Each sighting adds a soft spot where his feet were; sightings come at a steady
+// pace while he's in view, so the heat is time spent. Scaled to the busiest
+// spots (99th percentile), so one long stay doesn't wash out the rest.
+function drawHeat(cv, pts, size) {
+  if (!cv || !size) return;
+  const GW = 320, GH = Math.max(1, Math.round(GW * size[1] / size[0]));
+  cv.width = GW; cv.height = GH;
+  const ctx = cv.getContext && cv.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, GW, GH);
+  if (!pts.length) return;
+  const g = new Float32Array(GW * GH), s = GW * 0.012, R = Math.ceil(3 * s), ker = [];
+  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) ker.push([dx, dy, Math.exp(-(dx * dx + dy * dy) / (2 * s * s))]);
+  for (const p of pts) {
+    const cx = Math.round(p[0] * (GW - 1)), cy = Math.round(p[1] * (GH - 1));
+    for (const [dx, dy, w] of ker) {
+      const x = cx + dx, y = cy + dy;
+      if (x >= 0 && y >= 0 && x < GW && y < GH) g[y * GW + x] += w;
+    }
+  }
+  const nz = Array.from(g).filter(v => v > 0.05).sort((a, b) => a - b);
+  const top = nz.length ? nz[Math.min(nz.length - 1, Math.floor(nz.length * 0.99))] : 1;
+  const img = ctx.createImageData(GW, GH);
+  for (let i = 0; i < g.length; i++) {
+    const v = Math.min(1, g[i] / top);
+    if (v < 0.03) continue;
+    const [r, gg, b] = heatColor(v);
+    img.data[i * 4] = r; img.data[i * 4 + 1] = gg; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = Math.round(255 * (0.25 + 0.55 * Math.sqrt(v)));
+  }
+  ctx.putImageData(img, 0, 0);
+}
+const DOT_FROM_H = 6, DOT_TO_H = 20;     // dot colours: blue in the morning to red in the evening
+const dotHue = sec => 240 * (1 - clamp((sec / 3600 - DOT_FROM_H) / (DOT_TO_H - DOT_FROM_H), 0, 1));
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+function Heatmap({ cam }) {
+  const { ov } = useApp();
+  const c = cam || camsOf(ov, 'yard')[0] || camsOf(ov)[0];
+  const [day, setDay] = useState('');
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState('');
+  const [mode, setMode] = useState('heat');
+  const [noPic, setNoPic] = useState('');
+  const last = useRef('');
+  const cvRef = useRef(null);
+  const load = useCallback(() => api('api/heatmap?cam=' + enc(c || '') + (day ? '&day=' + day : '')).then(d => {
+    const s = JSON.stringify(d);
+    if (s !== last.current) { last.current = s; setSt(d); }    // unchanged data: nothing redrawn
+    setErr('');
+    return true;
+  }).catch(e => { setErr(e.message); return false; }), [c, day]);
+  usePoll('heatmap:' + c + ':' + day, load, 60000);
+  useEffect(() => { if (mode === 'heat' && st) drawHeat(cvRef.current, st.points, st.size); }, [st, mode]);
+  const [W, H] = (st && st.size) || [16, 9];
+  const dots = useMemo(() => {
+    if (!st || mode !== 'dots') return null;
+    const step = Math.max(1, Math.ceil(st.points.length / 3000)), r = W / 220;
+    return st.points.filter((_, i) => i % step === 0).map((p, i) =>
+      <circle key={i} cx={p[0] * W} cy={p[1] * H} r={r} style={{ fill: `hsla(${dotHue(p[2])},95%,55%,.75)` }} />);
+  }, [st, mode, W, H]);
+
+  if (!c) return <><h2>Heatmap</h2><p className="mut">No cameras.</p></>;
+  if (err && !st) return <><h2>Heatmap</h2><div className="card"><p className="err">Couldn't load: {err}</p></div></>;
+  if (!st) return <><h2>Heatmap</h2><p className="mut">Loading…</p></>;
+  const days = st.days.some(d => d.day === st.day) ? st.days : [{ day: st.day, n: 0 }, ...st.days];
+  const idx = days.findIndex(d => d.day === st.day);
+  const n = st.points.length, tot = Object.values(st.places).reduce((a, b) => a + b, 0) || 1;
+  const yard = st.role === 'yard', O = st.outline;
+  return <>
+    <h2>Heatmap · {st.camName}</h2>
+    <div className="row" style={{ marginBottom: 8 }}>
+      <button aria-label="Day before" disabled={idx >= days.length - 1} onClick={() => setDay(days[idx + 1].day)}>‹</button>
+      <select aria-label="Day" value={st.day} onChange={e => setDay(e.target.value)}>
+        {days.map(d => <option key={d.day} value={d.day}>{fmtDay(d.day)}{d.n ? ` · ${d.n} sightings` : ' · none'}</option>)}
+      </select>
+      <button aria-label="Day after" disabled={idx <= 0} onClick={() => setDay(days[idx - 1].day)}>›</button>
+      <span className="seg">
+        <button className={mode === 'heat' ? 'on' : ''} onClick={() => setMode('heat')}>Heat</button>
+        <button className={mode === 'dots' ? 'on' : ''} onClick={() => setMode('dots')}>Dots by time</button>
+      </span>
+    </div>
+    <p className="mut" style={{ margin: '0 0 8px' }}>
+      {n ? <>Seen {n} times, about {dur(st.seen_s)} in view, from {hhmm(st.first)} to {hhmm(st.last)}.
+        {' '}{cap(Object.entries(st.places).sort((a, b) => b[1] - a[1]).map(([p, k]) => `${PLACE[p] || p} ${pct(k, tot)}`).join(' · '))}.</>
+        : st.days.length ? 'Not seen on this camera that day.' : 'No sightings recorded on this camera yet.'}
+    </p>
+    <div className="pic heat" style={{ aspectRatio: `${W} / ${H}` }}>
+      {st.frame && noPic !== st.frame.file && <img src={`img?f=${enc(st.frame.file)}&w=1600`} alt="" draggable={false}
+        onError={() => setNoPic(st.frame.file)} />}
+      {mode === 'heat' && <canvas ref={cvRef} />}
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ pointerEvents: 'none' }}>
+        {yard && O && <polygon className="ol" points={O.map(p => `${p[0] * W},${p[1] * H}`).join(' ')} />}
+        {dots}
+      </svg>
+    </div>
+    <div className="legend" style={{ marginTop: 8 }}>
+      {mode === 'heat'
+        ? <span>less time <i style={{ width: 120, background: HEAT_CSS }} /> more time</span>
+        : <span>{DOT_FROM_H}:00 <i style={{ width: 120, background: 'linear-gradient(90deg,hsl(240,95%,55%),hsl(120,95%,55%),hsl(0,95%,55%))' }} /> {DOT_TO_H}:00</span>}
+      {yard && O && <span><i style={{ background: '#ff4fd8' }} />pen walls</span>}
+    </div>
+    <p className="mut" style={{ marginTop: 8 }}>
+      Each point is where his feet were (the bottom middle of his box) when the detector saw him, every {st.every} s while he's in view.
+      {st.frame && noPic === st.frame.file ? ' The camera picture could not be loaded.'
+        : !st.frame ? ' No camera picture is kept.'
+        : !st.frame.same_day && ` The picture is from ${st.frame.when}; none is kept from that day.`}
+    </p>
+  </>;
+}
+
 // ── Live ──────────────────────────────────────────────────────────────────────
 function Live() {
   const { ov } = useApp();
@@ -856,6 +983,7 @@ function Page({ route }) {
   if (page === 'outline') return <Outline />;
   if (page === 'training') return <Training key={arg} focus={arg ? +arg : null} />;
   if (page === 'results') return <Results key={arg} cam={arg} />;
+  if (page === 'heatmap') return <Heatmap key={arg} cam={arg} />;
   if (page === 'live') return <Live />;
   if (page === 'servers') return <Servers />;
   if (page === 'jobs') return JOBS[arg] ? <Jobs key={arg} name={arg} /> : null;

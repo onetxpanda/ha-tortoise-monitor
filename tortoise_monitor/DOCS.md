@@ -27,6 +27,10 @@ detector; when it is not reporting, the add-on runs the detector itself.
    "Not in this frame", or drag a box around him).
 5. **Training**: approve a proposed run (CPU or GPU). When it has finished,
    press **Use this detector**.
+6. **Heatmap**: where he was on a day, on the yard (or house) camera's
+   picture: as heat (red where he spent the most time) or as dots coloured by
+   time of day, with the pen walls. Pick the day at the top; today's fills in
+   as he's seen.
 
 Entities (device "Tortoise", over MQTT):
 
@@ -63,6 +67,11 @@ A camera whose detection isn't running shows its entities as unknown.
 - **Detection**: keyframes from Frigate's restream (never the cameras
   directly), every few seconds. In the add-on they are decoded and scaled on
   the Intel GPU and the detector runs there with OpenVINO, else on the CPU.
+- **Heatmap**: every time the detector sees him, his foot point (the bottom
+  middle of his box) is kept with the time and place, for 90 days. Sightings
+  come every few seconds while he's in view, so the heat shows time spent; it
+  is scaled to the busiest spots so one long stay doesn't hide the rest. The
+  picture behind it is that day's frame nearest 1 pm.
 - **Training servers** check in every 5 seconds. They update only from the
   add-on: when Home Assistant has updated the add-on, each server installs the
   add-on's copy of its code between jobs and restarts. A server that stops

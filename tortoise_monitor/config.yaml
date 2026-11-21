@@ -1,6 +1,6 @@
 name: "Tortoise Monitor"
 description: "Finds the tortoise on the house and yard cameras, tells Home Assistant where he is, and manages the detector's training data and training."
-version: "1.3.0"
+version: "2.0.0"
 slug: "tortoise_monitor"
 url: "https://github.com/onetxpanda/ha-tortoise-monitor"
 init: false
