@@ -706,7 +706,6 @@ function drawHeat(cv, pts, size) {
 }
 const DOT_FROM_H = 6, DOT_TO_H = 20;     // dot colours: blue in the morning to red in the evening
 const dotHue = sec => 240 * (1 - clamp((sec / 3600 - DOT_FROM_H) / (DOT_TO_H - DOT_FROM_H), 0, 1));
-const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 function Heatmap({ cam }) {
@@ -740,7 +739,7 @@ function Heatmap({ cam }) {
   if (!st) return <><h2>Heatmap</h2><p className="mut">Loading…</p></>;
   const days = st.days.some(d => d.day === st.day) ? st.days : [{ day: st.day, n: 0 }, ...st.days];
   const idx = days.findIndex(d => d.day === st.day);
-  const n = st.points.length, tot = Object.values(st.places).reduce((a, b) => a + b, 0) || 1;
+  const n = st.points.length;
   const yard = st.role === 'yard', O = st.outline;
   return <>
     <h2>Heatmap · {st.camName}</h2>
@@ -756,8 +755,7 @@ function Heatmap({ cam }) {
       </span>
     </div>
     <p className="mut" style={{ margin: '0 0 8px' }}>
-      {n ? <>Seen {n} times, about {dur(st.seen_s)} in view, from {hhmm(st.first)} to {hhmm(st.last)}.
-        {' '}{cap(Object.entries(st.places).sort((a, b) => b[1] - a[1]).map(([p, k]) => `${PLACE[p] || p} ${pct(k, tot)}`).join(' · '))}.</>
+      {n ? <>Seen {n} times, about {dur(st.seen_s)} in view, from {hhmm(st.first)} to {hhmm(st.last)}.</>
         : st.days.length ? 'Not seen on this camera that day.' : 'No sightings recorded on this camera yet.'}
     </p>
     <div className="pic heat" style={{ aspectRatio: `${W} / ${H}` }}>
@@ -775,12 +773,6 @@ function Heatmap({ cam }) {
         : <span>{DOT_FROM_H}:00 <i style={{ width: 120, background: 'linear-gradient(90deg,hsl(240,95%,55%),hsl(120,95%,55%),hsl(0,95%,55%))' }} /> {DOT_TO_H}:00</span>}
       {yard && O && <span><i style={{ background: '#ff4fd8' }} />pen walls</span>}
     </div>
-    <p className="mut" style={{ marginTop: 8 }}>
-      Each point is where his feet were (the bottom middle of his box) when the detector saw him, every {st.every} s while he's in view.
-      {st.frame && noPic === st.frame.file ? ' The camera picture could not be loaded.'
-        : !st.frame ? ' No camera picture is kept.'
-        : !st.frame.same_day && ` The picture is from ${st.frame.when}; none is kept from that day.`}
-    </p>
   </>;
 }
 

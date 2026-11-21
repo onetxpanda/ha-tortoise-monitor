@@ -1,3 +1,6 @@
+## 2.0.1
+- Heatmap: only the day's numbers are shown (how often, how long, first and last sighting); the inside/outside split and the notes about the points and the picture are gone
+
 ## 2.0.0
 - New Heatmap page: where he was on a day, on the yard (or house) camera's picture with the pen walls. As heat, red where he spent the most time, or as dots coloured by time of day. It says how often and for about how long he was seen, when he was first and last seen, and how his time split between inside and outside the pen walls. Pick any day of the last 90; today's fills in as he's seen
 - It draws on the sightings the detector has kept since 1.0.0, so the days since the add-on was installed are there already
