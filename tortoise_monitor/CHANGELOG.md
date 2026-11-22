@@ -1,3 +1,7 @@
+## 3.0.0
+- New Location entity: House, Out of house or Outside walls. The house camera decides House (it sees him) or Out of house (a usable frame without him). Outside walls comes from the yard camera (his feet outside the pen outline) and holds until the house camera sees him again or it is cleared by hand. A camera with no answer changes nothing, and the location is kept across restarts
+- New Clear outside the walls button: sets the location back to what the house camera says now
+
 ## 2.0.2
 - A frame that can't be used now gives no answer instead of "not seen". That is a frame with an error from ffmpeg around it (a broken or reconnecting stream), or one too dark to show anything (mean brightness under 40 of 255, as when the lamp goes off before the camera switches to infrared). His location stays as it was; a camera with no usable frame for a minute goes to unknown, the same as one that stops
 - ffmpeg's error output is read as it comes instead of only when ffmpeg exits

@@ -20,6 +20,12 @@ from . import paths_worker  # noqa: F401  (puts the shared detector module on th
 import tmdetect as D
 
 STALE_S = 60            # a camera with no result this long: its entities go to "unknown"
+# Location: the house camera decides House (it sees him) or Out of house (a
+# usable frame without him). Outside walls comes from the yard camera and holds
+# until the house camera sees him again or it is cleared by hand, so the escape
+# alert can't clear when he walks out of the yard camera's view. No answer from
+# a camera changes nothing.
+LOCATION_TEXT = {"house": "House", "out": "Out of house", "outside": "Outside walls"}
 SNAP_EVERY_S = 30       # last-location picture: at most this often while he stays put
 
 
@@ -117,6 +123,8 @@ class Manager:
         self.cams = {}
         self.local = {}
         self.last_seen = db.kv_get("last_seen", None)
+        self.location = db.kv_get("location", None)          # {"place": house|out|outside, "since": ts}
+        mqtt.on_press("clear_outside_walls", self.clear_outside_walls)
         threading.Thread(target=self._loop, daemon=True).start()
 
     def cam(self, cam):
@@ -203,9 +211,19 @@ class Manager:
             if not rows or not any(f for _, f in rows):
                 return None                               # not running: unknown
             return any(f and st["seen"] and (place is None or st["place"] == place) for st, f in rows)
-        self.mqtt.state("in_house", any_seen("house"))
+        house, walls = any_seen("house"), any_seen("yard", "outside")
+        self.mqtt.state("in_house", house)
         self.mqtt.state("in_yard", any_seen("yard"))
-        self.mqtt.state("outside_walls", any_seen("yard", "outside"))
+        self.mqtt.state("outside_walls", walls)
+        with self.lock:
+            cur = self.location["place"] if self.location else None
+            new = "house" if house else "outside" if walls else "out" if house is False and cur != "outside" else cur
+            if new != cur:
+                self.set_location(new, "")
+        if self.location:
+            self.mqtt.state("location", LOCATION_TEXT[self.location["place"]])
+            from datetime import datetime, timezone
+            self.mqtt.attributes("location", {"since": datetime.fromtimestamp(self.location["since"], timezone.utc).isoformat()})
         if self.last_seen:
             from datetime import datetime, timezone
             self.mqtt.state("last_seen", datetime.fromtimestamp(self.last_seen["ts"], timezone.utc).isoformat())
@@ -214,6 +232,22 @@ class Manager:
                                                "score": self.last_seen["score"], "detected_by": self.last_seen["source"]})
         srcs = sorted({st["device"] for st in self.cams.values() if st["ts"] and now - st["ts"] < STALE_S and st["device"]})
         self.mqtt.state("detector", "; ".join(srcs) if srcs else "not running")
+
+    def set_location(self, place, why):
+        """Called with self.lock held."""
+        was = self.location["place"] if self.location else None
+        self.location = {"place": place, "since": time.time()}
+        db.kv_set("location", self.location)
+        self.log(f"location: {LOCATION_TEXT.get(was, 'none')} -> {LOCATION_TEXT[place]}{why}")
+
+    def clear_outside_walls(self):
+        """The Clear outside the walls button: back to what the house camera says now."""
+        with self.lock:
+            if not self.location or self.location["place"] != "outside":
+                return
+            st = [s for c, s in self.cams.items() if rules.role(c) == "house" and s["ts"] and time.time() - s["ts"] < STALE_S]
+            self.set_location("house" if any(s["seen"] for s in st) else "out", " (outside the walls cleared by hand)")
+        self.publish()
 
     def _loop(self):
         """Every 2 s: hand each camera to the server or to this add-on."""
@@ -252,4 +286,4 @@ class Manager:
             st["fresh"] = st["ts"] is not None and now - st["ts"] < STALE_S
             st["model"] = db.kv_get(f"model:{cam}")
             out[cam] = st
-        return {"cameras": out, "last_seen": self.last_seen}
+        return {"cameras": out, "last_seen": self.last_seen, "location": self.location}

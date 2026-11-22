@@ -13,6 +13,8 @@ ENTITIES = [
     ("binary_sensor", "in_house", {"name": "In house", "icon": "mdi:home"}),
     ("binary_sensor", "in_yard", {"name": "Seen in yard", "icon": "mdi:grass"}),
     ("binary_sensor", "outside_walls", {"name": "Outside pen walls", "icon": "mdi:fence"}),
+    ("sensor", "location", {"name": "Location", "icon": "mdi:turtle"}),
+    ("button", "clear_outside_walls", {"name": "Clear outside the walls", "icon": "mdi:fence"}),
     ("sensor", "last_seen", {"name": "Last seen", "device_class": "timestamp"}),
     ("sensor", "last_place", {"name": "Last place", "icon": "mdi:map-marker"}),
     ("image", "last_location", {"name": "Last known location", "content_type": "image/jpeg"}),
@@ -26,6 +28,7 @@ class Mqtt:
     def __init__(self, log=print):
         self.log = log; self.client = None; self.connected = False; self.last = {}
         self.lock = threading.Lock()
+        self.presses = {}                      # button key -> function called when it is pressed
         threading.Thread(target=self._connect_loop, daemon=True).start()
 
     def _connect_loop(self):
@@ -39,6 +42,7 @@ class Mqtt:
                         c.username_pw_set(svc["username"], svc.get("password"))
                     c.will_set(f"{PREFIX}/status", "offline", retain=True)
                     c.on_connect = self._on_connect
+                    c.on_message = self._on_message
                     c.on_disconnect = lambda *a, **k: setattr(self, "connected", False)
                     c.connect_async(svc["host"], int(svc.get("port", 1883)))
                     c.loop_start()
@@ -56,9 +60,12 @@ class Mqtt:
                    "availability_topic": f"{PREFIX}/status", **extra}
             if comp == "image":
                 cfg["image_topic"] = f"{PREFIX}/{key}/image"
+            elif comp == "button":
+                cfg["command_topic"] = f"{PREFIX}/{key}/press"
+                client.subscribe(cfg["command_topic"])
             else:
                 cfg["state_topic"] = f"{PREFIX}/{key}/state"
-            if key == "last_seen":
+            if key in ("last_seen", "location"):
                 cfg["json_attributes_topic"] = f"{PREFIX}/{key}/attributes"
             client.publish(f"homeassistant/{comp}/{PREFIX}_{key}/config", json.dumps(cfg), retain=True)
         client.publish(f"{PREFIX}/status", "online", retain=True)
@@ -66,6 +73,18 @@ class Mqtt:
             for topic, (payload, retain) in self.last.items():      # re-send current states after a reconnect
                 client.publish(topic, payload, retain=retain)
         self.log("MQTT connected; entities announced")
+
+    def _on_message(self, client, userdata, msg):
+        key = msg.topic[len(PREFIX) + 1:].rsplit("/", 1)[0] if msg.topic.endswith("/press") else None
+        fn = self.presses.get(key)
+        if fn:
+            try:
+                fn()
+            except Exception as e:
+                self.log(f"MQTT: {key}: {e}")
+
+    def on_press(self, key, fn):
+        self.presses[key] = fn
 
     def _pub(self, topic, payload, retain=True):
         with self.lock:
