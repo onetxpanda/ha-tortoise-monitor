@@ -1,3 +1,6 @@
+## 3.1.1
+- A camera's frames are no longer all marked unusable after Frigate reconnects to the camera. The reconnect changes the stream's timestamps; ffmpeg then reported every later frame as out of order although the pictures were fine. Frames are now numbered as they leave ffmpeg, so only real stream and decode errors mark a frame.
+
 ## 3.1.0
 - Training sets improve instead of just growing. The frames of the run in use stay; a new frame joins only if it teaches the detector in use something: a frame with him it misses or is less than 75 % sure of, or a frame without him where it puts a box on something. Frames it already gets right are left out
 - Frigate events (people, cats, dogs, deer ...; not the house camera's "cat", which is him) count as frames without him when the detector saw him somewhere else at that moment; anything in them that looks like him goes to Review

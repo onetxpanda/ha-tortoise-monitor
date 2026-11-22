@@ -201,11 +201,15 @@ class KeyframeReader(threading.Thread):
         c = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-skip_frame", "nokey"]
         if self.hwaccel == "vaapi":
             c += ["-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128", "-hwaccel_output_format", "vaapi"]
-            vf = f"scale_vaapi=w={self.sw}:h={self.sh}:format=nv12,hwdownload,format=nv12"
+            vf = f"scale_vaapi=w={self.sw}:h={self.sh}:format=nv12,hwdownload,format=nv12,setpts=N"
             pix = "nv12"
         else:
-            vf = f"scale={self.sw}:{self.sh}:flags=bilinear"
+            vf = f"scale={self.sw}:{self.sh}:flags=bilinear,setpts=N"
             pix = "rgb24"
+        # Frames are numbered 0, 1, 2… on the way out (setpts=N): the time a frame
+        # is taken is when it arrives here, and the stream's own timestamps jump
+        # when Frigate reconnects to the camera, which made ffmpeg report every
+        # later frame as out of order although the picture was fine.
         return c + ["-i", self.url, "-an", "-fps_mode", "passthrough", "-vf", vf, "-f", "rawvideo", "-pix_fmt", pix, "pipe:1"]
 
     def _errors(self, proc):
