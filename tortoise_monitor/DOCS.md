@@ -60,10 +60,16 @@ A camera whose detection isn't running shows its entities as unknown.
   the walls, the frame goes to Review. A run uses your answers and these
   frames, made diverse: frames with him at most one per hour for each part of
   the picture he's in (none where he hasn't moved in 2 hours), frames without
-  him one per hour; it is tested on whole days it never trains on, and no day
-  may outweigh the rest.
-- **Training**: YOLO11n, on a training server, after your approval. The model
-  is sent back for OpenVINO (half precision, 960×544 for the yard).
+  him one per hour; no day may outweigh the rest.
+- **Test days**: each camera has days that no run trains on. Only their full
+  frames are test frames (what live detection sees, never Frigate's event
+  snapshots). They are fixed when the next run is approved. Each run and the
+  detector in use are scored on them with the same code live detection uses:
+  found him (a box of at least 0.5 on him) and false alarms (a box of at least
+  0.5 on a frame without him).
+- **Training**: YOLO11n, on a training server, after your approval: every
+  epoch, keeping the last. The model is sent back for OpenVINO (half
+  precision, 960×544 for the yard).
 - **Detection**: keyframes from Frigate's restream (never the cameras
   directly), every few seconds. In the add-on they are decoded and scaled on
   the Intel GPU and the detector runs there with OpenVINO, else on the CPU.

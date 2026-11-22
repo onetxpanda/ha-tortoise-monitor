@@ -33,12 +33,17 @@ it already gets right are left out. Everything new that goes into a run is
 made diverse first: frames with him, at most one per hour for each part of the
 picture he is in, and none where he hasn't moved within 2 hours; frames
 without him, an empty scene once per 20 minutes and each look-alike once per
-hour. Then whole days are held out for testing and no
-day may outweigh the rest (see dataset())."""
-import bisect, hashlib, json, threading, time
+hour.
+
+Each camera has test days that no run trains on, so every run and the
+detector in use are scored on the same frames (see choose_test_days()). Only
+full frames are test frames -- what live detection sees -- never Frigate's
+low-resolution event snapshots. The days are fixed when the next run is
+approved."""
+import bisect, collections, hashlib, json, math, threading, time
 from datetime import datetime
 
-from . import config, db
+from . import config, db, ha
 
 POS, NEG, CAND = 0.40, 0.15, 0.10           # first-pass score: clearly him / clearly not / worth drawing
 MODEL_YES, MODEL_SHOW = 0.50, 0.25          # detector in use: found / worth drawing
@@ -48,6 +53,8 @@ CHECK_NEAR = 40                             # a collected frame within this many
 SNAP_NEAR = 120                             # for Frigate's event snapshots
 SAME_IOU, SAME_SECS = 0.8, 7200             # him in the same spot within 2 hours: not a new frame
 GRID = (4, 3)                               # parts of the picture, for "one per hour for each part"
+TEST_MIN, TEST_MAX = 0.20, 0.40             # test days: at least / never more than this share of the frames with him
+NIGHT_SUN = -6.0                            # sun below this many degrees: night
 
 
 def iou(a, b):
@@ -339,11 +346,6 @@ def counts(frames, revs):
     return out
 
 
-def split_of(x):
-    key = x["file"] if x["snap"] else x["cam"] + local(x["ts"]).strftime("%Y-%m-%d %H")
-    return "val" if int(hashlib.md5(key.encode()).hexdigest(), 16) % 5 == 0 else "train"
-
-
 def teaches(x, box):
     """Whether a labelled frame teaches the detector in use something: a frame
     with him it misses or is less than SURE of (or boxes in the wrong place), a
@@ -365,24 +367,181 @@ def in_use_items(cam, c=None):
     return m["run"], set(json.loads(r["items"]) if r and r["items"] else [])
 
 
-def dataset(frames, revs, cam, c=None):
-    """Training items [(frame, box or None, split)] and their counts.
+_where = {"latlon": None, "at": 0.0}
 
-    The run in use's frames stay; a new labelled frame (your answers, the
-    safety checks, Frigate events) joins only if it teaches the detector in
-    use something (teaches()). New frames are made diverse first: with him, at
-    most one per hour for each part of the picture he's in (your answers
-    first), and none where he hasn't moved within 2 hours; without him, a
-    Frigate event once, a look-alike (something taken for him) once per hour
-    for each spot, an empty scene once per 20 minutes. Then whole days the
-    model never trains on are held out for testing (the days with the fewest
-    frames with him, until at least 10 %, never over 40 %; with only one day so
-    far, hours are held out instead), and no training day may give more new
-    frames with him than the next-largest day or a third of them, whichever is
-    more."""
+
+def latlon():
+    """Home Assistant's location, asked at most once an hour."""
+    if time.time() - _where["at"] > 3600:
+        _where["at"] = time.time()
+        try:
+            _where["latlon"] = ha.location()
+        except Exception:
+            pass
+    return _where["latlon"]
+
+
+def sun_elevation(ts, lat, lon):
+    """The sun's elevation in degrees at a time and place (within about a degree)."""
+    d = ts / 86400.0 - 10957.5                                  # days since 2000-01-01 12:00 UTC
+    g = math.radians((357.529 + 0.98560028 * d) % 360)
+    q = (280.459 + 0.98564736 * d) % 360
+    L = math.radians((q + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g)) % 360)
+    e = math.radians(23.439 - 0.00000036 * d)
+    ra = math.atan2(math.cos(e) * math.sin(L), math.cos(L))
+    dec = math.asin(math.sin(e) * math.sin(L))
+    gmst = (18.697374558 + 24.06570982441908 * d) % 24
+    h = math.radians(gmst * 15 + lon) - ra
+    la = math.radians(lat)
+    return math.degrees(math.asin(math.sin(la) * math.sin(dec) + math.cos(la) * math.cos(dec) * math.cos(h)))
+
+
+def night(ts):
+    """Whether the sun was down (below NIGHT_SUN), or None without a location."""
+    ll = latlon()
+    return None if not ll else sun_elevation(ts, *ll) < NIGHT_SUN
+
+
+def day_of(x):
+    return local(x["ts"]).strftime("%Y-%m-%d")
+
+
+def spot(x, box):
+    """The part of the picture his feet are in."""
+    fx, fy = foot(box, x["size"])
+    return min(GRID[0] - 1, int(fx * GRID[0])), min(GRID[1] - 1, int(fy * GRID[1]))
+
+
+def neg_kind(x):
+    """What a frame without him shows: a Frigate event's label, a look-alike, or an empty scene."""
+    if x.get("event"):
+        return x.get("flabel") or "event"
+    lk = max(([x["s"], x["obox"]], [x["m"] or 0, x["mbox"]]), key=lambda t: t[0])
+    return "look-alike" if lk[0] >= NEG and lk[1] else "empty"
+
+
+def diverse(pos, neg):
+    """Labelled frames (frame, box, source, from the run in use), made diverse:
+    with him, at most one per hour for each part of the picture he's in (the run
+    in use's frames first, then yours) and none where he hasn't moved within 2
+    hours; without him, a Frigate event once, a look-alike once per hour for
+    each spot, an empty scene once per 20 minutes. The run in use's frames always stay."""
+    order = lambda t: (not t[3], t[2] != "you", t[0]["snap"], t[0]["ts"])
+    kept, keys, recent = [], set(), collections.defaultdict(list)
+    for x, b, src, base in sorted(pos, key=order):
+        k = (x["file"] if x["snap"] else hour_key(x), *spot(x, b))
+        h = int(x["ts"] // 3600)
+        if not base:
+            if k in keys:
+                continue
+            if not x["snap"] and any(abs(x["ts"] - t) < SAME_SECS and iou(b, bb) >= SAME_IOU
+                                     for hh in range(h - 2, h + 3) for t, bb in recent.get(hh, ())):
+                continue
+        keys.add(k); recent[h].append((x["ts"], b)); kept.append((x, b, src, base))
+    negs, nkeys = [], set()
+    for x, b, src, base in sorted(neg, key=order):
+        kind = neg_kind(x)
+        if x.get("event"):
+            k = ("event", x["event"])
+        elif x["snap"]:
+            k = x["file"]
+        elif kind == "look-alike":
+            lk = max(([x["s"], x["obox"]], [x["m"] or 0, x["mbox"]]), key=lambda t: t[0])
+            k = ("look-alike", hour_key(x), *spot(x, lk[1]))
+        else:
+            t = local(x["ts"]); k = ("empty", t.strftime("%Y-%m-%d %H"), t.minute // 20)
+        if not base and k in nkeys:
+            continue
+        nkeys.add(k); negs.append((x, None, src, base))
+    return kept, negs
+
+
+def trained_days(run, c):
+    """Days a run trained on: the days of its frames, except the days it was
+    tested on. Without recorded test days (runs before whole-day testing),
+    every day of its frames counts."""
+    if run is None:
+        return set()
+    r = c.execute("SELECT items, counts FROM runs WHERE id=?", (run,)).fetchone()
+    if not r or not r["items"]:
+        return set()
+    k = json.loads(r["counts"] or "{}")
+    held = set(k.get("test_days") or k.get("val_days") or [])
+    files = json.loads(r["items"]); days = set()
+    for i in range(0, len(files), 500):
+        part = files[i:i + 500]
+        for row in c.execute(f"SELECT ts FROM frames WHERE file IN ({','.join('?' * len(part))})", part):
+            days.add(local(row["ts"]).strftime("%Y-%m-%d"))
+    return days - held
+
+
+def choose_test_days(pos, negs):
+    """Test days, from full frames only (event snapshots are left out of the
+    choice): first, day by day, the day that adds the most of what the test set
+    lacks -- him at day and at night in each part of the picture, and without
+    him each kind of scene (each Frigate label, look-alikes, empty) at day and
+    at night -- preferring days with fewer frames with him; then the smallest
+    days until the test set has TEST_MIN of the full frames with him. Never more
+    than TEST_MAX of them."""
+    cells, npos = collections.defaultdict(set), collections.Counter()
+    for x, b, *_ in pos:
+        if not x["snap"]:
+            d = day_of(x); cells[d].add(("him", night(x["ts"]), *spot(x, b))); npos[d] += 1
+    for x, *_ in negs:
+        if not x["snap"]:
+            cells[day_of(x)].add(("not", night(x["ts"]), neg_kind(x)))
+    total = sum(npos.values())
+    cand = set(cells)
+    chosen, have, n = set(), set(), 0
+    fits = lambda d: not total or n + npos[d] <= TEST_MAX * total
+    while True:
+        best = max((d for d in cand - chosen if fits(d) and cells[d] - have),
+                   key=lambda d: (len(cells[d] - have), -npos[d], d), default=None)
+        if best is None:
+            break
+        chosen.add(best); have |= cells[best]; n += npos[best]
+    for d in sorted(cand - chosen, key=lambda d: (npos[d], d)):
+        if n >= TEST_MIN * total:
+            break
+        if npos[d] and fits(d):
+            chosen.add(d); n += npos[d]
+    return chosen
+
+
+def in_use_score(tpos, tneg):
+    """The detector in use on the test frames, from the detector pass's results:
+    found him (best box at least MODEL_YES, overlapping his box by at least
+    0.3), false alarms (a box at least MODEL_YES on a frame without him), and
+    frames it hasn't looked at yet. The training job scores runs the same way."""
+    k = {"with_him": 0, "found": 0, "without_him": 0, "false_alarms": 0, "waiting": 0}
+    for x, b, *_ in tpos + tneg:
+        if x["m"] is None:
+            k["waiting"] += 1; continue
+        hit = x["m"] >= MODEL_YES and x["mbox"] is not None
+        if b:
+            k["with_him"] += 1; k["found"] += bool(hit and iou(x["mbox"], b) >= 0.3)
+        else:
+            k["without_him"] += 1; k["false_alarms"] += bool(hit)
+    return k
+
+
+def dataset(frames, revs, cam, c=None):
+    """Training items [(frame, box or None, split)] and their counts. split:
+    "train" (the other days) or "test" (the test days).
+
+    The test days are fixed once a run has been approved with them (kv
+    testdays:<cam>); until then they are chosen afresh (choose_test_days()).
+    Every labelled full frame of a test day is a test frame, made diverse; the
+    day's event snapshots are not used; nothing from a test day ever trains.
+
+    On the other days, the run in use's frames stay, and a new labelled frame
+    (your answers, the safety checks, Frigate events) joins only if it teaches
+    the detector in use something (teaches()); then they are made diverse
+    (diverse()), and no training day may give more new frames with him than
+    the next-largest day or a third of them, whichever is more."""
+    c = c or db.connect()
     run_in_use, base_files = in_use_items(cam, c)
-    pos, neg = [], []
-    known = waiting = 0
+    labelled = []
     for x in frames.values():
         if x["cam"] != cam:
             continue
@@ -394,7 +553,23 @@ def dataset(frames, revs, cam, c=None):
             box = None
         else:
             continue
-        base = x["file"] in base_files
+        labelled.append((x, box, src, x["file"] in base_files))
+    trained = trained_days(run_in_use, c)
+    fixed = db.kv_get(f"testdays:{cam}", None, c)
+    if fixed:
+        tdays = set(fixed["days"])
+    else:
+        allp, alln = diverse([t for t in labelled if t[1]], [t for t in labelled if not t[1]])
+        tdays = choose_test_days(allp, alln)
+    tl = [t for t in labelled if day_of(t[0]) in tdays and not t[0]["snap"]]
+    test_snaps = sum(1 for t in labelled if day_of(t[0]) in tdays and t[0]["snap"])
+    tpos, tneg = diverse([t for t in tl if t[1]], [t for t in tl if not t[1]])
+
+    pos, neg = [], []
+    known = waiting = 0
+    for x, box, src, base in labelled:
+        if day_of(x) in tdays:
+            continue
         if run_in_use is not None and not base:
             t = teaches(x, box)
             if t is None:
@@ -403,84 +578,50 @@ def dataset(frames, revs, cam, c=None):
                 known += 1; continue
         (pos if box else neg).append((x, box, src, base))
     n_pos_all, n_neg_all = len(pos), len(neg)
-    # the run in use's frames first, then yours, full frames before snapshots, by time
-    order = lambda t: (not t[3], t[2] != "you", t[0]["snap"], t[0]["ts"])
-    kept, keys, recent = [], set(), []
-    for x, b, src, base in sorted(pos, key=order):
-        fx, fy = foot(b, x["size"])
-        k = (x["file"] if x["snap"] else hour_key(x), min(GRID[0] - 1, int(fx * GRID[0])), min(GRID[1] - 1, int(fy * GRID[1])))
-        if not base:
-            if k in keys:
-                continue
-            if not x["snap"] and any(abs(x["ts"] - t) < SAME_SECS and iou(b, bb) >= SAME_IOU for t, bb in recent):
-                continue
-        keys.add(k); recent.append((x["ts"], b)); kept.append((x, b, src, base))
-    negs, nkeys = [], set()
-    for x, b, src, base in sorted(neg, key=order):
-        if x.get("event"):
-            k = ("event", x["event"])
-        elif x["snap"]:
-            k = x["file"]
-        else:
-            lk = max(([x["s"], x["obox"]], [x["m"] or 0, x["mbox"]]), key=lambda t: t[0])
-            if lk[0] >= NEG and lk[1]:
-                fx, fy = foot(lk[1], x["size"])
-                k = ("look-alike", hour_key(x), min(GRID[0] - 1, int(fx * GRID[0])), min(GRID[1] - 1, int(fy * GRID[1])))
-            else:
-                t = local(x["ts"]); k = ("empty", t.strftime("%Y-%m-%d %H"), t.minute // 20)
-        if not base and k in nkeys:
-            continue
-        nkeys.add(k); negs.append((x, None, src, base))
-    # test on whole days it never trains on; cap the new frames any one training day gives
-    day = lambda x: local(x["ts"]).strftime("%Y-%m-%d")
+    kept, negs = diverse(pos, neg)
+    # cap the new frames any one training day gives
     by_day = {}
     for t in kept:
-        by_day.setdefault(day(t[0]), []).append(t)
-    val_days, n_val = set(), 0
-    for d in sorted(by_day, key=lambda d: (len(by_day[d]), d)):
-        if n_val >= 0.10 * len(kept) or n_val + len(by_day[d]) > 0.40 * len(kept):
-            break
-        val_days.add(d); n_val += len(by_day[d])
+        by_day.setdefault(day_of(t[0]), []).append(t)
     capped = {}
-    if val_days:
-        split_by = "days"
-        side = lambda x: "val" if day(x) in val_days else "train"
-        train_days = {d: v for d, v in by_day.items() if d not in val_days}
-        sizes = sorted((len(v) for v in train_days.values()), reverse=True)
-        if len(sizes) >= 2:
-            cap = max(sizes[1], sum(min(s, sizes[1]) for s in sizes) // 3)
-            for d, v in train_days.items():
-                if len(v) > cap:
-                    old = [t for t in v if t[3]]
-                    fresh = sorted((t for t in v if not t[3]), key=lambda t: t[0]["ts"])
-                    room = max(0, cap - len(old))
-                    step = len(fresh) / room if room else 0
-                    train_days[d] = old + ([fresh[int(i * step)] for i in range(room)] if room else [])
-                    capped[d] = [len(v), len(train_days[d])]
-        pos_items = [(t[0], t[1], "train", t[2], t[3]) for v in train_days.values() for t in v] + \
-                    [(t[0], t[1], "val", t[2], t[3]) for d in val_days for t in by_day[d]]
-    else:
-        split_by = "hours"
-        side = split_of
-        pos_items = [(x, b, split_of(x), src, base) for x, b, src, base in kept]
-    items = [(x, b, s) for x, b, s, _, _ in pos_items] + [(x, None, side(x)) for x, _, _, _ in negs]
-    c = {"pos": len(pos_items), "pos_all": n_pos_all, "pos_you": sum(1 for p in pos_items if p[3] == "you"),
+    sizes = sorted((len(v) for v in by_day.values()), reverse=True)
+    if len(sizes) >= 2:
+        cap = max(sizes[1], sum(min(s, sizes[1]) for s in sizes) // 3)
+        for d, v in by_day.items():
+            if len(v) > cap:
+                old = [t for t in v if t[3]]
+                fresh = sorted((t for t in v if not t[3]), key=lambda t: t[0]["ts"])
+                room = max(0, cap - len(old))
+                step = len(fresh) / room if room else 0
+                by_day[d] = old + ([fresh[int(i * step)] for i in range(room)] if room else [])
+                capped[d] = [len(v), len(by_day[d])]
+    train_pos = [t for v in by_day.values() for t in v]
+    items = [(x, b, "train") for x, b, _, _ in train_pos] + [(x, None, "train") for x, _, _, _ in negs] + \
+            [(x, b, "test") for x, b, _, _ in tpos] + [(x, None, "test") for x, _, _, _ in tneg]
+    nights = [night(x["ts"]) for x, *_ in tpos], [night(x["ts"]) for x, *_ in tneg]
+    k = {"pos": len(train_pos), "pos_all": n_pos_all, "pos_you": sum(1 for p in train_pos if p[2] == "you"),
          "neg": len(negs), "neg_all": n_neg_all, "neg_you": sum(1 for n in negs if n[2] == "you"),
          "neg_event": sum(1 for n in negs if n[2] == "event"),
-         "in_use_run": run_in_use, "from_in_use": sum(1 for p in pos_items if p[4]) + sum(1 for n in negs if n[3]),
-         "new": sum(1 for p in pos_items if not p[4]) + sum(1 for n in negs if not n[3]), "known": known, "waiting": waiting,
+         "in_use_run": run_in_use, "from_in_use": sum(1 for p in train_pos if p[3]) + sum(1 for n in negs if n[3]),
+         "new": sum(1 for p in train_pos if not p[3]) + sum(1 for n in negs if not n[3]), "known": known, "waiting": waiting,
          "left_out": sum(1 for x in frames.values() if x["cam"] == cam and x["label"] == "ask" and x["file"] not in revs),
-         "split": split_by, "val_days": sorted(val_days), "capped": capped,
-         "train_days": len({day(x) for x, b, s, _, _ in pos_items if s == "train"}),
-         "train": sum(1 for i in items if i[2] == "train"), "val": sum(1 for i in items if i[2] == "val"),
-         "val_pos": sum(1 for i in items if i[2] == "val" and i[1]),
+         "split": "test days", "capped": capped, "train_days": len({day_of(t[0]) for t in train_pos}),
+         "train": sum(1 for i in items if i[2] == "train"),
+         "test_days": sorted(tdays), "test_fixed": bool(fixed), "test_since_run": fixed.get("run") if fixed else None,
+         "test": len(tpos) + len(tneg), "test_pos": len(tpos), "test_neg": len(tneg), "test_snaps_unused": test_snaps,
+         "test_night_pos": None if None in nights[0] else sum(nights[0]),
+         "test_night_neg": None if None in nights[1] else sum(nights[1]),
+         "test_spots": len({spot(x, b) for x, b, *_ in tpos}), "spots": len({spot(x, b) for x, b, *_ in labelled if b and not x["snap"]}),
+         "test_events": dict(collections.Counter(neg_kind(x) for x, *_ in tneg if x.get("event"))),
+         "test_in_use_trained": sum(1 for x, *_ in tpos + tneg if day_of(x) in trained),
+         "test_in_use": in_use_score(tpos, tneg) if run_in_use is not None else None,
          "reviews": sum(1 for f in revs if f in frames and frames[f]["cam"] == cam)}
-    return items, c
+    return items, k
 
 
 def default_config(cam):
     imgsz = int(config.cameras().get(cam, {}).get("imgsz", 960))
-    return {"model": "yolo11n.pt", "imgsz": imgsz, "epochs": 40, "batch": 16, "patience": 10, "device": "cpu"}
+    return {"model": "yolo11n.pt", "imgsz": imgsz, "epochs": 40, "batch": 16, "device": "cpu"}
 
 
 def protected_files(c):

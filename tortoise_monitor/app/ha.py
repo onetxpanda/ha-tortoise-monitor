@@ -28,6 +28,14 @@ def mqtt_service():
         return None
 
 
+def location():
+    """Home Assistant's latitude and longitude, or None."""
+    if not TOKEN:
+        return None
+    d = _get("http://supervisor/core/api/config")
+    return float(d["latitude"]), float(d["longitude"])
+
+
 def host_address():
     """This host's primary IPv4 address (for training servers to reach the add-on)."""
     if not TOKEN:

@@ -339,8 +339,19 @@ def run_action(F, rid, action, body):
             if dev not in ("cpu", "gpu"):
                 raise ValueError("device must be cpu or gpu")
             cfg["device"] = dev
+            if not k["test_fixed"] and k["test_days"]:
+                # the test days are fixed from now on: no later run trains on them
+                db.kv_set(f"testdays:{r['camera']}", {"days": k["test_days"], "run": rid, "since": now}, c)
+                k["test_fixed"], k["test_since_run"] = True, rid
             payload = {"run": rid, "camera": r["camera"], "config": cfg,
                        "items": [{"file": x["file"], "box": b, "split": s, "w": x["size"][0], "h": x["size"][1]} for x, b, s in items]}
+            # the detector in use is scored on the same test frames, by the same code
+            from .detection import model_files
+            m = db.kv_get(f"model:{r['camera']}", None, c)
+            if m and os.path.exists(model_files(m["run"])["xml"]):
+                ur = c.execute("SELECT config FROM runs WHERE id=?", (m["run"],)).fetchone()
+                payload["in_use"] = {"run": m["run"], "imgsz": int(m.get("imgsz") or json.loads(ur["config"] if ur else "{}").get("imgsz") or cfg["imgsz"]),
+                                     "trained_on_test": k["test_in_use_trained"]}
             c.execute("UPDATE runs SET status='approved', decided=?, counts=?, config=?, items=? WHERE id=?",
                       (now, json.dumps(k), json.dumps(cfg), json.dumps([x["file"] for x, _, _ in items]), rid))
             c.execute("INSERT INTO jobs(kind, status, run, payload, created) VALUES ('train', 'queued', ?, ?, ?)", (rid, json.dumps(payload), now))

@@ -190,8 +190,15 @@ class Site:
     def runs_state(self):
         self.F.refresh(); c = db.connect(); revs = rules.reviews(c)
         ss = servers.servers(c)
+        tests = {}
+        for cam in config.cameras():
+            k = rules.dataset(self.F.frames, revs, cam, c)[1]
+            tests[cam] = {"camName": cam_name(cam), **{x: k[x] for x in (
+                "test_days", "test_fixed", "test_since_run", "test", "test_pos", "test_neg", "test_night_pos", "test_night_neg",
+                "test_spots", "spots", "test_events", "test_in_use_trained", "test_in_use", "test_snaps_unused", "in_use_run")}}
         return {"runs": [self.run_json(c, r, revs) for r in c.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 50")],
-                "servers": [{"name": s["name"], "online": s["online"], "gpus": len((s["info"] or {}).get("gpus") or [])} for s in ss]}
+                "servers": [{"name": s["name"], "online": s["online"], "gpus": len((s["info"] or {}).get("gpus") or [])} for s in ss],
+                "tests": tests}
 
     def results_state(self, cam):
         c = db.connect(); now = time.time()

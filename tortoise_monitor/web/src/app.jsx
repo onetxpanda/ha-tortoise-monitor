@@ -539,7 +539,7 @@ function RunCard({ r, st, focus, logOpen, log, act, toggleLog }) {
   } else if (r.status === 'running') {
     const es = p.epoch_secs || [], per = es.length ? es[es.length - 1] : null, L = p.lease;
     body = <>
-      <p>{r.server_name ? `On ${r.server_name} · ` : ''}{p.epoch ? <>Epoch <b>{p.epoch}</b> of {p.epochs}</> : (p.phase || 'Starting')}{p.map50 != null ? ` · mAP50 ${(+p.map50).toFixed(2)}` : ''}</p>
+      <p>{r.server_name ? `On ${r.server_name} · ` : ''}{p.epoch ? <>Epoch <b>{p.epoch}</b> of {p.epochs}</> : (p.phase || 'Starting')}</p>
       {L && <p>{L.state === 'waiting' ? <><span className="pill acc">Waiting for {L.card}</span> held by {L.holder || 'another program'}; Arbiter asks it to hand the card over once its current work is done (since {at(L.since)})</>
         : L.state === 'holding' ? <><span className="pill ok">On {L.card}</span> since {at(L.since)}{L.asked_by ? ` · ${L.asked_by} asked for it at ${at(L.asked_at)}; finishing first` : ''}</>
         : L.state === 'no arbiter' ? <><span className="pill bad">On {L.card} without a lease</span> the arbiter isn't running</> : null}</p>}
@@ -548,10 +548,18 @@ function RunCard({ r, st, focus, logOpen, log, act, toggleLog }) {
       <div className="row"><button onClick={() => act(r.id, 'stop')}>Stop</button>{logBtn}</div>
     </>;
   } else if (r.status === 'done') {
+    const T = res.test, t = T && T.this, u = T && T.in_use;
     body = <>
-      <p>Held-out frames with him: found <b>{res.found} of {res.with_him}</b> ({pct(res.found, res.with_him)})</p>
-      <p>Held-out frames without him: false alarm in <b>{res.false_alarms} of {res.without_him}</b> ({pct(res.false_alarms, res.without_him)})</p>
-      <p className="mut">At confidence {res.conf} · mAP50 {(+res.map50).toFixed(2)} · {res.epochs_run} epochs in {dur(res.secs)} on {res.device === 'gpu' ? 'a GPU' : 'the CPU'}</p>
+      {t ? <>
+        <p>Test days, frames with him: this run found <b>{t.found} of {t.with_him}</b> ({pct(t.found, t.with_him)}){u ? <> · run {u.run}, then in use, found <b>{u.found}</b> ({pct(u.found, u.with_him)})</> : null}</p>
+        <p>Test days, frames without him: this run false alarm in <b>{t.false_alarms} of {t.without_him}</b> ({pct(t.false_alarms, t.without_him)}){u ? <> · run {u.run}: <b>{u.false_alarms}</b> ({pct(u.false_alarms, u.without_him)})</> : null}</p>
+        {u && u.trained_on_test ? <p className="mut">Run {u.run} trained on {u.trained_on_test} of these frames</p> : null}
+      </> : res.with_him != null ? <>
+        <p>Held-out frames with him: found <b>{res.found} of {res.with_him}</b> ({pct(res.found, res.with_him)})</p>
+        <p>Held-out frames without him: false alarm in <b>{res.false_alarms} of {res.without_him}</b> ({pct(res.false_alarms, res.without_him)})</p>
+      </> : null}
+      {T && T.error && <p className="err">Scoring on the test days failed: {T.error}</p>}
+      <p className="mut">At confidence {res.conf} · {res.epochs_run} epochs in {dur(res.secs)} on {res.device === 'gpu' ? 'a GPU' : 'the CPU'}</p>
       <div className="row">{r.in_use ? <button onClick={() => act(r.id, 'unuse')}>Stop using</button> : <button className="pri" onClick={() => act(r.id, 'use')}>Use this detector</button>}{logBtn}</div>
     </>;
   } else if (r.status === 'failed') {
@@ -565,17 +573,30 @@ function RunCard({ r, st, focus, logOpen, log, act, toggleLog }) {
         <p>Frames with him: <b>{k.pos}</b> ({k.pos_you} checked by you) · without him: <b>{k.neg}</b> ({k.neg_you} checked by you)</p>
         {k.in_use_run != null && <p className="mut">From run {k.in_use_run}, the detector in use: {k.from_in_use} · new, that it misses or isn't sure about: {k.new} · left out, that it already gets right: {k.known}{k.waiting ? ` · not yet looked at by it: ${k.waiting}` : ''}{k.neg_event ? ` · from Frigate events: ${k.neg_event}` : ''}</p>}
         {(k.pos_all > k.pos || k.neg_all > k.neg) && <p className="mut">Made diverse from {k.pos_all} with him and {k.neg_all ?? k.neg} without: with him, one per hour for each part of the picture (none where he hasn't moved in 2 hours); without him, an empty scene once per 20 minutes and each look-alike once per hour. Your answers count first.</p>}
-        {k.val != null && <p className="mut">{k.split === 'days'
+        {k.split === 'test days' ? <p className="mut">Test days: {k.test_days.length ? `${k.test_days.map(fmtDay).join(', ')} · ${k.test} full frames (${k.test_pos} with him)` : 'none'}{k.left_out != null ? ` · uncertain, not used: ${k.left_out}` : ''}</p>
+        : k.val != null && <p className="mut">{k.split === 'days'
           ? `Tested on ${k.val_days.length} whole day${k.val_days.length === 1 ? '' : 's'} it never trains on: ${k.val} frames (${k.val_pos} with him) from ${k.val_days.map(fmtDay).join(', ')}`
           : k.split === 'hours' ? `Held out for testing: ${k.val} (${k.val_pos} with him), whole hours — only one day with him so far, so it can't be tested on another day`
           : `Held out for testing: ${k.val} (${k.val_pos} with him)`}{k.left_out != null ? ` · uncertain, not used: ${k.left_out}` : ''}</p>}
         {k.train_days ? <p className="mut">Trains on frames with him from {k.train_days} day{k.train_days === 1 ? '' : 's'}{k.capped && Object.keys(k.capped).length ? ` · capped so no day outweighs the rest: ${Object.entries(k.capped).map(([d, ab]) => `${fmtDay(d)} ${ab[0]} → ${ab[1]}`).join(', ')}` : ''}</p> : null}
       </>}
-      <p className="mut">YOLO11n starting from COCO weights · {cfg.imgsz} px · up to {cfg.epochs} epochs (stops after {cfg.patience} without gain){r.status !== 'proposed' ? ` · on ${cfg.device === 'gpu' ? 'a GPU' : 'a CPU'}${r.server_name ? ' of ' + r.server_name : ''}` : ''}</p>
+      <p className="mut">YOLO11n starting from COCO weights · {cfg.imgsz} px · {cfg.patience != null ? `up to ${cfg.epochs} epochs (stopped after ${cfg.patience} without gain by ultralytics' own metrics)` : `${cfg.epochs} epochs, keeps the last`}{r.status !== 'proposed' ? ` · on ${cfg.device === 'gpu' ? 'a GPU' : 'a CPU'}${r.server_name ? ' of ' + r.server_name : ''}` : ''}</p>
       {body}
       {logOpen && <pre>{log || res.log || p.log || '(empty)'}</pre>}
     </div>
   );
+}
+
+function TestDays({ tests }) {
+  return <div className="card">
+    <h3>Test days</h3>
+    {Object.entries(tests).map(([cam, t]) => <div key={cam}>
+      <p><b>{t.camName}</b>: {t.test_days.length ? <>{t.test_days.map(fmtDay).join(', ')} · full frames: {t.test_pos} with him{t.test_night_pos != null ? ` (${t.test_night_pos} at night)` : ''} in {t.test_spots} of the {t.spots} parts of the picture he's been in · {t.test_neg} without him{t.test_night_neg != null ? ` (${t.test_night_neg} at night)` : ''}{Object.keys(t.test_events).length ? ` · Frigate events: ${Object.entries(t.test_events).map(([l, n]) => `${l} ${n}`).join(', ')}` : ''}{t.test_snaps_unused ? ` · event snapshots from these days, not used: ${t.test_snaps_unused}` : ''}</>
+        : 'none yet: no full frames labelled'}</p>
+      {t.test_in_use && t.test_days.length ? <p>Detector in use (run {t.in_use_run}): found him in <b>{t.test_in_use.found} of {t.test_in_use.with_him}</b> ({pct(t.test_in_use.found, t.test_in_use.with_him)}) · false alarm in <b>{t.test_in_use.false_alarms} of {t.test_in_use.without_him}</b> ({pct(t.test_in_use.false_alarms, t.test_in_use.without_him)}){t.test_in_use.waiting ? ` · not yet looked at: ${t.test_in_use.waiting}` : ''}</p> : null}
+      <p className="mut">{t.test_fixed ? `Fixed since run ${t.test_since_run}` : 'Fixed when the next run is approved'}{t.test_in_use_trained ? ` · the detector in use trained on ${t.test_in_use_trained} of these frames` : ''}</p>
+    </div>)}
+  </div>;
 }
 
 function Training({ focus }) {
@@ -612,8 +633,9 @@ function Training({ focus }) {
     <h2>{focus ? (runs.length ? `Training · ${runs[0].camName} run ${focus}` : 'Training') : 'Training · all runs'}</h2>
     {!focus && <div className="row" style={{ marginBottom: 10 }}>
       {camsOf(ov).map(c => <button key={c} onClick={() => propose(c)}>Propose a {camName(ov, c).toLowerCase()} run</button>)}
-      <span className="mut">A run is also proposed for a camera once its review queue is clear and there's 25% more data (or 100 more answers) than last time. Nothing trains until you approve it.</span>
+      <span className="mut">A run is also proposed for a camera once its review queue is clear and 25 more frames teach the detector in use something. Nothing trains until you approve it.</span>
     </div>}
+    {!focus && st && st.tests && <TestDays tests={st.tests} />}
     {err && !st ? <div className="card"><p className="err">Couldn't load the runs: {err}</p></div>
       : !st ? <p className="mut">Loading…</p>
       : !runs.length ? <div className="card"><p>{focus ? 'No such run.' : 'No runs here. A first run is proposed for a camera once its review queue is clear and it has 150 frames with him, or propose one yourself.'}</p></div>

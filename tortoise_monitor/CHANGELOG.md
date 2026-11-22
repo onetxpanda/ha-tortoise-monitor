@@ -1,3 +1,10 @@
+## 3.2.0
+- Training keeps the last epoch of every run. Before, ultralytics picked the "best" epoch and stopped early by its own metrics, which rate an untrained first epoch that puts a box at confidence 1.00 everywhere as near-perfect; run 19 was that first epoch and found him in 0 of 25 held-out frames with false alarms in 59 of 59
+- Ultralytics' precision, recall and mAP are no longer used or shown anywhere
+- Fixed test days for each camera: no run trains on them, and only their full frames are test frames, never event snapshots. They are fixed when the next run is approved
+- Each run and the detector in use are scored on the test frames by the same OpenVINO code live detection uses, and the run card shows both side by side
+- The Training page shows the test days and how the detector in use does on them, from the detector pass
+
 ## 3.1.1
 - A camera's frames are no longer all marked unusable after Frigate reconnects to the camera. The reconnect changes the stream's timestamps; ffmpeg then reported every later frame as out of order although the pictures were fine. Frames are now numbered as they leave ffmpeg, so only real stream and decode errors mark a frame.
 

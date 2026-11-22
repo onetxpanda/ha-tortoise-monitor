@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """One approved training run, as its own process on the training server
 (so it holds its own GPU lease). Downloads the run's frames from the add-on
-(cached between runs), trains the YOLO detector, measures it on the held-out
-frames, exports it for inference -- OpenVINO, half precision, at the
-rectangular input the frames need (960x544 for 16:9 at 960) -- and sends the
-model and the results back. Progress goes to the add-on after every epoch.
+(cached between runs), trains the YOLO detector on the training days for
+every epoch and keeps the last one, exports it for inference -- OpenVINO,
+half precision, at the rectangular input the frames need (960x544 for 16:9
+at 960) -- and sends the model back.
+
+Nothing is picked or reported by ultralytics' own validation metrics: an
+untrained first epoch that puts a box at confidence 1.00 everywhere scores
+near-perfect on them (run 19 was that epoch). Then it scores this
+model and the detector in use on the camera's test days, which no run trains
+on, with the same OpenVINO code live detection uses, and sends the results.
+Progress goes to the add-on after every epoch.
 
 Usage: tmjob_train.py <job.json>"""
 import gc, json, os, shutil, statistics, sys, threading, time, traceback
@@ -15,8 +22,42 @@ sys.path.insert(0, HERE)
 import tmclient, tmdetect as D
 
 
+CONF = 0.5          # the detector's "found him", as live detection uses it
+HIT_IOU = 0.3       # a found box must overlap the labelled one this much
+
+
 class Yield(Exception):
     """Forced off the card from the arbiter's page: stop now, keep the last checkpoint."""
+
+
+def iou(a, b):
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix
+    return ix / u if u > 0 else 0.0
+
+
+def score(xml, imgsz, tests, cache):
+    """One detector on the test frames, through tmdetect's OpenVINO path (the
+    same letterbox, preprocessing and decoding as live detection)."""
+    det = D.OpenVinoDetector(xml, "CPU", "rgb")
+    out = {"with_him": 0, "found": 0, "without_him": 0, "false_alarms": 0, "missed": [], "false": []}
+    for i in tests:
+        lb = D.Letterbox(imgsz, i["w"], i["h"])
+        rgb, _ = D.load_rgb(os.path.join(cache, i["file"]), lb.sw, lb.sh)
+        dets = D.decode(det(lb.pad_rgb(rgb)), lb)
+        top = dets[0] if dets else None            # best first
+        hit = top is not None and top[0] >= CONF
+        if i["box"]:
+            out["with_him"] += 1
+            if hit and iou(top[1], i["box"]) >= HIT_IOU:
+                out["found"] += 1
+            else:
+                out["missed"].append(i["file"])
+        else:
+            out["without_him"] += 1
+            if hit:
+                out["false_alarms"] += 1; out["false"].append(i["file"])
+    return out
 
 
 def main():
@@ -59,19 +100,26 @@ def main():
         with ThreadPoolExecutor(6) as ex:
             list(ex.map(fetch, need))
         data = os.path.join(out, "data"); shutil.rmtree(data, ignore_errors=True)
-        for split in ("train", "val"):
+        for split in ("train", "check"):
             for k in ("images", "labels"):
                 os.makedirs(f"{data}/{k}/{split}", exist_ok=True)
-        for i in items:
+        train = [i for i in items if i["split"] != "test"]
+        # ultralytics insists on validating once at the end; it gets a few training
+        # frames for that, and its numbers are not used
+        def link(split, i):
             name = os.path.splitext(os.path.basename(i["file"]))[0]
-            os.symlink(os.path.join(cache, i["file"]), f"{data}/images/{i['split']}/{name}.jpg")
-            with open(f"{data}/labels/{i['split']}/{name}.txt", "w") as o:
+            os.symlink(os.path.join(cache, i["file"]), f"{data}/images/{split}/{name}.jpg")
+            with open(f"{data}/labels/{split}/{name}.txt", "w") as o:
                 if i["box"]:
                     x0, y0, x1, y1 = i["box"]; W, H = i["w"], i["h"]
                     o.write(f"0 {(x0 + x1) / 2 / W:.6f} {(y0 + y1) / 2 / H:.6f} {(x1 - x0) / W:.6f} {(y1 - y0) / H:.6f}\n")
+        for i in train:
+            link("train", i)
+        for i in train[::max(1, len(train) // 16)][:16]:
+            link("check", i)
         with open(f"{data}/data.yaml", "w") as o:
-            o.write(f"path: {data}\ntrain: images/train\nval: images/val\nnames:\n  0: tortoise\n")
-        n_train = sum(1 for i in items if i["split"] == "train")
+            o.write(f"path: {data}\ntrain: images/train\nval: images/check\nnames:\n  0: tortoise\n")
+        n_train = len(train)
 
         from ultralytics import YOLO, settings
         settings.update({"sync": False})
@@ -82,7 +130,7 @@ def main():
                 raise RuntimeError("this server's PyTorch has no CUDA")
             lease = Lease(f"tortoise detector training (run {p['run']})", lambda st: prog(lease=st))
 
-        marks = {"start": None}; secs = []; maps = []
+        marks = {"start": None}; secs = []
 
         def on_start(tr):
             marks["start"] = time.time()
@@ -95,10 +143,8 @@ def main():
             if not marks["start"]:
                 return
             secs.append(time.time() - marks["start"]); marks["start"] = None
-            mt = getattr(tr, "metrics", None) or {}
-            maps.append(mt.get("metrics/mAP50(B)"))
-            log(f"epoch {tr.epoch + 1}/{tr.epochs}: {secs[-1]:.1f} s, mAP50 {maps[-1] or 0:.3f}")
-            prog(phase="training", epoch=tr.epoch + 1, epochs=tr.epochs, epoch_secs=secs, map50=maps[-1])
+            log(f"epoch {tr.epoch + 1}/{tr.epochs}: {secs[-1]:.1f} s")
+            prog(phase="training", epoch=tr.epoch + 1, epochs=tr.epochs, epoch_secs=secs)
             if lease:
                 lease.report(statistics.median(secs[-3:]) * (tr.epochs - tr.epoch - 1) + 60)
 
@@ -120,8 +166,9 @@ def main():
                 if resume:
                     model.train(resume=True, device=dev)
                 else:
+                    # every epoch (patience 0: no early stopping), no validation between epochs
                     model.train(data=f"{data}/data.yaml", imgsz=cfg["imgsz"], epochs=cfg["epochs"], batch=cfg["batch"],
-                                patience=cfg["patience"], device=dev, workers=8 if gpu else 4, cache="ram", project=out,
+                                patience=0, val=False, device=dev, workers=8 if gpu else 4, cache="ram", project=out,
                                 name="train", exist_ok=True, seed=0, plots=False, verbose=False, amp=gpu)
                 break
             except Yield:
@@ -133,41 +180,45 @@ def main():
             prog(phase="paused")
             lease.release()
 
-        prog(phase="testing on held-out frames")
-        best = f"{out}/train/weights/best.pt"
-        m = YOLO(best)
-        tp = fn = fp = tn = 0
-        for i in items:
-            if i["split"] != "val":
-                continue
-            r = m.predict(os.path.join(cache, i["file"]), imgsz=cfg["imgsz"], conf=0.1, verbose=False, device=dev)[0]
-            top = None
-            if len(r.boxes):
-                k = int(r.boxes.conf.argmax()); top = (float(r.boxes.conf[k]), [float(v) for v in r.boxes.xyxy[k]])
-            hit = top is not None and top[0] >= 0.5
-            if i["box"]:
-                ix = lambda a, b: max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
-                good = hit and ix(top[1], i["box"]) / ((top[1][2] - top[1][0]) * (top[1][3] - top[1][1]) + (i["box"][2] - i["box"][0]) * (i["box"][3] - i["box"][1]) - ix(top[1], i["box"])) >= 0.3
-                tp += good; fn += not good
-            elif hit:
-                fp += 1
-            else:
-                tn += 1
-        mv = m.val(data=f"{data}/data.yaml", imgsz=cfg["imgsz"], device=dev, plots=False, verbose=False, batch=cfg["batch"])
+        final = f"{out}/train/weights/last.pt"      # the last epoch (ultralytics' best.pt is picked by its own metrics)
 
         # for inference: OpenVINO, half precision, at the frames' rectangular input
         prog(phase="exporting for inference")
         fw, fh = max(((i["w"], i["h"]) for i in items), key=lambda s: sum(1 for j in items if (j["w"], j["h"]) == s))
         ih, iw = D.input_hw(cfg["imgsz"], fw, fh)
-        xp = YOLO(best).export(format="openvino", imgsz=[ih, iw], half=True, verbose=False)
+        xp = YOLO(final).export(format="openvino", imgsz=[ih, iw], half=True, verbose=False)
         xml = next(os.path.join(xp, f) for f in os.listdir(xp) if f.endswith(".xml"))
         if lease:
             lease.release()
-        for name, path in (("model.xml", xml), ("model.bin", xml[:-4] + ".bin"), ("best.pt", best)):
+        for name, path in (("model.xml", xml), ("model.bin", xml[:-4] + ".bin"), ("best.pt", final)):   # "best.pt": the add-on's name for the PyTorch weights
             with open(path, "rb") as f:
                 client.put(f"/api/server/jobs/{jid}/artifact?name={name}", f.read(), timeout=300)
-        res = {"ok": True, "with_him": tp + fn, "found": tp, "without_him": fp + tn, "false_alarms": fp, "conf": 0.5,
-               "map50": float(mv.box.map50), "precision": float(mv.box.mp), "recall": float(mv.box.mr),
+
+        # this model and the detector in use, on the test days
+        tests = [i for i in items if i["split"] == "test"]
+        test = None
+        if tests:
+            prog(phase=f"scoring on {len(tests)} test frames")
+            test = {"frames": len(tests)}
+            try:
+                test["this"] = score(xml, cfg["imgsz"], tests, cache)
+                u = p.get("in_use")
+                if u:
+                    d = os.path.join(out, "in_use"); os.makedirs(d, exist_ok=True)
+                    for name in ("model.xml", "model.bin"):
+                        with open(os.path.join(d, name), "wb") as f:
+                            f.write(client.get(f"/api/server/model/{u['run']}/{name}", timeout=300))
+                    test["in_use"] = dict(score(os.path.join(d, "model.xml"), u["imgsz"], tests, cache),
+                                          run=u["run"], trained_on_test=u.get("trained_on_test", 0))
+                t, w = test["this"], test.get("in_use")
+                log(f"test: this run found {t['found']} of {t['with_him']}, false alarms {t['false_alarms']} of {t['without_him']}"
+                    + (f"; run {w['run']} (in use) found {w['found']}, false alarms {w['false_alarms']}" if w else ""))
+            except Exception as e:
+                test["error"] = f"{type(e).__name__}: {e}"
+                log("scoring on the test frames failed: " + test["error"])
+        t = (test or {}).get("this") or {}
+        res = {"ok": True, "with_him": t.get("with_him"), "found": t.get("found"), "without_him": t.get("without_him"),
+               "false_alarms": t.get("false_alarms"), "conf": CONF, "test": test,
                "epochs_run": len(secs), "secs": time.time() - t_start, "device": "gpu" if gpu else "cpu", "input": [ih, iw],
                "secs_per_img_epoch": (statistics.median(secs[1:] or secs) / max(1, n_train)) if secs else None,
                "log": "\n".join(logbuf)}
