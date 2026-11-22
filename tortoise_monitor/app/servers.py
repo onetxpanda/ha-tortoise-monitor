@@ -245,12 +245,17 @@ def done(srv, jid, body):
 
 # ---------------- scheduling ----------------
 def label_targets(c):
-    """Frames that need first boxes: each safety check's frame, and Frigate's
-    event snapshots (the rest of the collected frames aren't used)."""
+    """Frames that need first boxes: each safety check's frame, Frigate's event
+    snapshots, and one full-resolution frame from the middle of each Frigate
+    event (the rest of the collected frames aren't used)."""
     at_check = rules.check_frames(c)
+    mid = {}
+    for r in c.execute("SELECT file, event_id FROM frames WHERE source='event' AND deleted IS NULL ORDER BY event_id, ts"):
+        mid.setdefault(r["event_id"], []).append(r["file"])
+    middles = {v[len(v) // 2] for v in mid.values()}
     return [r for r in c.execute("SELECT f.file, f.camera, f.source, f.ts FROM frames f WHERE f.deleted IS NULL AND NOT EXISTS"
                                  " (SELECT 1 FROM owl o WHERE o.file=f.file AND o.mode='full') ORDER BY f.ts DESC")
-            if r["file"] in at_check or r["source"] == "event_snapshot"]
+            if r["file"] in at_check or r["source"] == "event_snapshot" or r["file"] in middles]
 
 
 def make_label_jobs(F):
@@ -280,9 +285,13 @@ def make_label_jobs(F):
         logger("label")(f"batch of {len(todo)} frames queued ({todo[0]['mode']})")
 
 
+NEW_FOR_RUN = 25           # new frames that teach the detector in use, before a run is proposed
+
+
 def propose_runs(F):
     """A run is proposed for a camera once its review queue is clear and there
-    is 25 % more data (or 100 more answers) than last time."""
+    are NEW_FOR_RUN more frames that teach the detector in use something than
+    at the last run (the first run: 150 frames with him)."""
     c = db.connect()
     revs = rules.reviews(c); kc = rules.counts(F.frames, revs)
     for cam in config.cameras():
@@ -292,11 +301,12 @@ def propose_runs(F):
             continue
         k = rules.dataset(F.frames, revs, cam)[1]
         last = c.execute("SELECT counts FROM runs WHERE camera=? ORDER BY id DESC LIMIT 1", (cam,)).fetchone()
-        if last is None:
-            due = k["pos"] >= 150
+        if last is None or k["in_use_run"] is None:
+            due = last is None and k["pos"] >= 150
         else:
             lk = json.loads(last["counts"] or "{}")
-            due = k["reviews"] - lk.get("reviews", 0) >= 100 or k["pos_all"] >= 1.25 * max(1, lk.get("pos_all", lk.get("pos", 0)))
+            before = lk.get("new", 0) if lk.get("in_use_run") == k["in_use_run"] else 0
+            due = k["new"] - before >= NEW_FOR_RUN
         if due:
             c.execute("INSERT INTO runs(camera, status, created, config, counts) VALUES (?,?,?,?,?)",
                       (cam, "proposed", time.time(), json.dumps(rules.default_config(cam)), json.dumps(k)))

@@ -1,3 +1,10 @@
+## 3.1.0
+- Training sets improve instead of just growing. The frames of the run in use stay; a new frame joins only if it teaches the detector in use something: a frame with him it misses or is less than 75 % sure of, or a frame without him where it puts a box on something. Frames it already gets right are left out
+- Frigate events (people, cats, dogs, deer ...; not the house camera's "cat", which is him) count as frames without him when the detector saw him somewhere else at that moment; anything in them that looks like him goes to Review
+- The first pass also looks at one full-resolution frame from the middle of each Frigate event, and collection keeps event snapshots from the last 120 days
+- A run is proposed once 25 more frames that teach the detector in use have come in
+- The run card shows how many frames come from the run in use, how many are new and how many were left out
+
 ## 3.0.0
 - New Location entity: House, Out of house or Outside walls. The house camera decides House (it sees him) or Out of house (a usable frame without him). Outside walls comes from the yard camera (his feet outside the pen outline) and holds until the house camera sees him again or it is cleared by hand. A camera with no answer changes nothing, and the location is kept across restarts
 - New Clear outside the walls button: sets the location back to what the house camera says now

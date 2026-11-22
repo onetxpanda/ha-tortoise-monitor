@@ -353,7 +353,7 @@ function Review({ cam }) {
   return <>
     <h2>Review · {cam ? camName(ov, cam) : 'both cameras'}</h2>
     <p className="mut" style={{ margin: '0 0 4px' }}>
-      {sum(x => x.to_review)} left · checked by you: {sum(x => x.pos_you + x.neg_you + x.skipped)} · labelled by the safety checks: {sum(x => x.pos_check)} with him, {sum(x => x.neg_check)} without
+      {sum(x => x.to_review)} left · checked by you: {sum(x => x.pos_you + x.neg_you + x.skipped)} · labelled by the safety checks: {sum(x => x.pos_check)} with him, {sum(x => x.neg_check)} without · from Frigate events: {sum(x => x.neg_event || 0)} without him
     </p>
     <p className="mut" style={{ fontSize: 13, margin: '0 0 10px' }}>Drag on either picture to draw his box · tap a box to pick it · tap the frame to zoom there.</p>
     {err ? <div className="card"><p className="err">Couldn't load the next frame: {err}</p></div>
@@ -563,6 +563,7 @@ function RunCard({ r, st, focus, logOpen, log, act, toggleLog }) {
       <p className="mut">Proposed {at(r.created)}{r.decided ? ' · decided ' + at(r.decided) : ''}{r.started ? ' · started ' + at(r.started) : ''}{r.finished ? ' · ended ' + at(r.finished) : ''}</p>
       {k.pos !== undefined && <>
         <p>Frames with him: <b>{k.pos}</b> ({k.pos_you} checked by you) · without him: <b>{k.neg}</b> ({k.neg_you} checked by you)</p>
+        {k.in_use_run != null && <p className="mut">From run {k.in_use_run}, the detector in use: {k.from_in_use} · new, that it misses or isn't sure about: {k.new} · left out, that it already gets right: {k.known}{k.waiting ? ` · not yet looked at by it: ${k.waiting}` : ''}{k.neg_event ? ` · from Frigate events: ${k.neg_event}` : ''}</p>}
         {(k.pos_all > k.pos || k.neg_all > k.neg) && <p className="mut">Made diverse from {k.pos_all} with him and {k.neg_all ?? k.neg} without: with him, one per hour for each part of the picture (none where he hasn't moved in 2 hours); without him, an empty scene once per 20 minutes and each look-alike once per hour. Your answers count first.</p>}
         {k.val != null && <p className="mut">{k.split === 'days'
           ? `Tested on ${k.val_days.length} whole day${k.val_days.length === 1 ? '' : 's'} it never trains on: ${k.val} frames (${k.val_pos} with him) from ${k.val_days.map(fmtDay).join(', ')}`

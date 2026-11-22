@@ -18,8 +18,19 @@ boxes on it, is labelled by that answer:
   either         the answer and the boxes disagree,  -> Review
                  or "outside the pen walls"
 
-Your answers in Review always count. Everything that goes into a run is made
-diverse first: frames with him, at most one per hour for each part of the
+Frigate's events (people, cats, dogs, deer ... on either camera; not the house
+camera's "cat", which is him) are labelled by where the detector in use saw
+him at that moment: on the yard camera while he was in his house, or on the
+house camera while it didn't see him, the frame is "not him" unless something
+in it strongly looks like him (then Review); with no record of where he was,
+anything that looks like him goes to Review.
+
+A frame only joins the training set if it teaches the detector in use
+something: a frame with him that it misses or is less than SURE of, or a
+frame without him where it puts a box on something. Frames of the run in use
+stay in the set, so the next model can't forget what this one learned; frames
+it already gets right are left out. Everything new that goes into a run is
+made diverse first: frames with him, at most one per hour for each part of the
 picture he is in, and none where he hasn't moved within 2 hours; frames
 without him, an empty scene once per 20 minutes and each look-alike once per
 hour. Then whole days are held out for testing and no
@@ -31,6 +42,8 @@ from . import config, db
 
 POS, NEG, CAND = 0.40, 0.15, 0.10           # first-pass score: clearly him / clearly not / worth drawing
 MODEL_YES, MODEL_SHOW = 0.50, 0.25          # detector in use: found / worth drawing
+SURE = 0.75                                 # detector in use: a frame with him it scores this or more teaches it nothing
+EVENT_NEAR = 60                             # a detector sighting within this many seconds says where he was at an event
 CHECK_NEAR = 40                             # a collected frame within this many seconds of a check is that check's frame
 SNAP_NEAR = 120                             # for Frigate's event snapshots
 SAME_IOU, SAME_SECS = 0.8, 7200             # him in the same spot within 2 hours: not a new frame
@@ -166,6 +179,18 @@ def build(c):
             pred[r["file"]] = json.loads(r["dets"])
     tss, chk = load_checks(c)
     at_check = check_frames(c, idx)
+    cams = config.cameras()
+    houses = [k for k in cams if cams[k].get("role", "yard") == "house"]
+    yards = [k for k in cams if cams[k].get("role", "yard") != "house"]
+
+    def seen(cams_, ts):
+        q = ",".join("?" * len(cams_))
+        return bool(cams_) and c.execute(f"SELECT 1 FROM detections WHERE camera IN ({q}) AND ts BETWEEN ? AND ? LIMIT 1",
+                                         (*cams_, ts - EVENT_NEAR, ts + EVENT_NEAR)).fetchone() is not None
+
+    def answered(cams_, ts):
+        q = ",".join("?" * len(cams_)); h = ts - ts % 3600
+        return bool(cams_) and c.execute(f"SELECT 1 FROM cycles WHERE camera IN ({q}) AND hour=? AND n > 0 LIMIT 1", (*cams_, h)).fetchone() is not None
     frames = {}
     for f, dets in owl.items():
         r = idx.get(f)
@@ -191,7 +216,11 @@ def build(c):
         elif f in at_check:
             check = nearest_check(tss, chk, r["ts"], CHECK_NEAR)
         x = {"file": f, "cam": r["camera"], "ts": r["ts"], "snap": snap, "size": [r["w"], r["h"]],
-             "cands": cands[:4], "s": s, "obox": obox, "m": m, "mbox": mbox, "check": check}
+             "cands": cands[:4], "s": s, "obox": obox, "m": m, "mbox": mbox, "check": check,
+             "event": r["event_id"] if r["source"] in ("event", "event_snapshot") else None, "flabel": r["frigate_label"]}
+        if x["event"] and not (role(r["camera"]) == "house" and r["frigate_label"] == "cat"):
+            x["where"] = ("house" if seen(houses, r["ts"]) else "yard" if seen(yards, r["ts"])
+                          else "away" if answered(houses, r["ts"]) else None)
         x["label"], x["info"] = check_label(x)
         frames[f] = x
     return frames, idx
@@ -210,6 +239,15 @@ def check_label(x):
     ck = x["check"]
     strong = x["s"] >= POS or (x["m"] is not None and x["m"] >= MODEL_YES)
     some = x["s"] >= NEG or (x["m"] is not None and x["m"] >= MODEL_SHOW)
+    if "where" in x:                                 # a Frigate event (not the house camera's "cat": that's him)
+        if x["m"] is None:
+            return None, None                        # the detector in use hasn't looked at it yet
+        house_cam = role(x["cam"]) == "house"
+        if x["where"] == ("house" if house_cam else "yard"):
+            return None, None                        # he was in this camera's view then
+        if x["where"] == "house" or (house_cam and x["where"] == "away"):
+            return ("ask", "event_box") if strong else ("not", None)     # he was elsewhere
+        return ("ask", "event_box") if some else ("not", None)           # no record of where he was
     if ck is None:
         return ("ask", "snapshot") if x["snap"] and some else (None, None)
     if role(x["cam"]) == "house":
@@ -230,6 +268,7 @@ def why(x):
         "in_yardbox": f"The safety check says he's in his house, but something in the yard looks like him ({max(x['s'], x['m'] or 0):.2f})",
         "outside": "The safety check says he's outside the pen walls",
         "snapshot": f"Frigate event snapshot: possible match ({max(x['s'], x['m'] or 0):.2f})",
+        "event_box": f"Frigate event ({x.get('flabel') or 'something'}): something here looks like him ({max(x['s'], x['m'] or 0):.2f})",
     }.get(x["info"] if x["label"] == "ask" else "", "")
 
 
@@ -253,7 +292,7 @@ def final(x, rev, ctx=None):
     if x["label"] == "him":
         return "pos", x["info"], "check"
     if x["label"] == "not":
-        return "neg", None, "check"
+        return "neg", None, "event" if x.get("event") and "where" in x else "check"
     if x["label"] == "ask":
         return "uncertain", None, None
     return "unused", None, None
@@ -284,7 +323,7 @@ def queue(frames, revs, cam=None):
 
 def counts(frames, revs):
     keep = asked(frames)
-    out = {cam: {"boxed": 0, "pos_you": 0, "neg_you": 0, "skipped": 0, "pos_check": 0, "neg_check": 0,
+    out = {cam: {"boxed": 0, "pos_you": 0, "neg_you": 0, "skipped": 0, "pos_check": 0, "neg_check": 0, "neg_event": 0,
                  "to_review": 0, "unused": 0} for cam in config.cameras()}
     for x in frames.values():
         k = out.setdefault(x["cam"], dict.fromkeys(next(iter(out.values())), 0)); k["boxed"] += 1
@@ -305,20 +344,45 @@ def split_of(x):
     return "val" if int(hashlib.md5(key.encode()).hexdigest(), 16) % 5 == 0 else "train"
 
 
-def dataset(frames, revs, cam):
+def teaches(x, box):
+    """Whether a labelled frame teaches the detector in use something: a frame
+    with him it misses or is less than SURE of (or boxes in the wrong place), a
+    frame without him where it puts a box on something. None: it hasn't looked."""
+    if x["m"] is None:
+        return None
+    if box is None:
+        return x["m"] >= MODEL_SHOW
+    return not (x["mbox"] is not None and x["m"] >= SURE and iou(x["mbox"], box) >= 0.5)
+
+
+def in_use_items(cam, c=None):
+    """(run, files) of the run whose detector is in use for this camera."""
+    c = c or db.connect()
+    m = db.kv_get(f"model:{cam}", None, c)
+    if not m:
+        return None, set()
+    r = c.execute("SELECT items FROM runs WHERE id=?", (m["run"],)).fetchone()
+    return m["run"], set(json.loads(r["items"]) if r and r["items"] else [])
+
+
+def dataset(frames, revs, cam, c=None):
     """Training items [(frame, box or None, split)] and their counts.
 
-    Candidates: your answers, and the safety-check frames (see the module).
-    Diverse first: frames with him, at most one per hour for each part of the
-    picture he's in (your answers first), and none where he hasn't moved
-    within 2 hours; frames without him, an empty scene once per 20 minutes and
-    a look-alike (something taken for him) once per hour for each spot.
-    Then whole days the model never trains on are held out for testing (the
-    days with the fewest frames with him, until at least 10 %, never over
-    40 %; with only one day so far, hours are held out instead), and no
-    training day may give more frames with him than the next-largest day or a
-    third of them, whichever is more."""
+    The run in use's frames stay; a new labelled frame (your answers, the
+    safety checks, Frigate events) joins only if it teaches the detector in
+    use something (teaches()). New frames are made diverse first: with him, at
+    most one per hour for each part of the picture he's in (your answers
+    first), and none where he hasn't moved within 2 hours; without him, a
+    Frigate event once, a look-alike (something taken for him) once per hour
+    for each spot, an empty scene once per 20 minutes. Then whole days the
+    model never trains on are held out for testing (the days with the fewest
+    frames with him, until at least 10 %, never over 40 %; with only one day so
+    far, hours are held out instead), and no training day may give more new
+    frames with him than the next-largest day or a third of them, whichever is
+    more."""
+    run_in_use, base_files = in_use_items(cam, c)
     pos, neg = [], []
+    known = waiting = 0
     for x in frames.values():
         if x["cam"] != cam:
             continue
@@ -326,26 +390,36 @@ def dataset(frames, revs, cam):
         if lab == "pos" and box:
             W, H = x["size"]
             box = [max(0, min(W, box[0])), max(0, min(H, box[1])), max(0, min(W, box[2])), max(0, min(H, box[3]))]
-            pos.append((x, box, src))
         elif lab == "neg":
-            neg.append((x, None, src))
+            box = None
+        else:
+            continue
+        base = x["file"] in base_files
+        if run_in_use is not None and not base:
+            t = teaches(x, box)
+            if t is None:
+                waiting += 1; continue
+            if not t:
+                known += 1; continue
+        (pos if box else neg).append((x, box, src, base))
     n_pos_all, n_neg_all = len(pos), len(neg)
-    # diverse: yours first, then by time
-    order = lambda t: (t[2] != "you", t[0]["ts"])
+    # the run in use's frames first, then yours, full frames before snapshots, by time
+    order = lambda t: (not t[3], t[2] != "you", t[0]["snap"], t[0]["ts"])
     kept, keys, recent = [], set(), []
-    for x, b, src in sorted(pos, key=order):
+    for x, b, src, base in sorted(pos, key=order):
         fx, fy = foot(b, x["size"])
         k = (x["file"] if x["snap"] else hour_key(x), min(GRID[0] - 1, int(fx * GRID[0])), min(GRID[1] - 1, int(fy * GRID[1])))
-        if k in keys:
-            continue
-        if not x["snap"] and any(abs(x["ts"] - t) < SAME_SECS and iou(b, bb) >= SAME_IOU for t, bb in recent):
-            continue
-        keys.add(k); recent.append((x["ts"], b)); kept.append((x, b, src))
-    # without him: an empty scene once per 20 minutes; a look-alike (something
-    # the first pass or the detector took for him) once per hour for each spot
+        if not base:
+            if k in keys:
+                continue
+            if not x["snap"] and any(abs(x["ts"] - t) < SAME_SECS and iou(b, bb) >= SAME_IOU for t, bb in recent):
+                continue
+        keys.add(k); recent.append((x["ts"], b)); kept.append((x, b, src, base))
     negs, nkeys = [], set()
-    for x, b, src in sorted(neg, key=order):
-        if x["snap"]:
+    for x, b, src, base in sorted(neg, key=order):
+        if x.get("event"):
+            k = ("event", x["event"])
+        elif x["snap"]:
             k = x["file"]
         else:
             lk = max(([x["s"], x["obox"]], [x["m"] or 0, x["mbox"]]), key=lambda t: t[0])
@@ -354,10 +428,10 @@ def dataset(frames, revs, cam):
                 k = ("look-alike", hour_key(x), min(GRID[0] - 1, int(fx * GRID[0])), min(GRID[1] - 1, int(fy * GRID[1])))
             else:
                 t = local(x["ts"]); k = ("empty", t.strftime("%Y-%m-%d %H"), t.minute // 20)
-        if k in nkeys:
+        if not base and k in nkeys:
             continue
-        nkeys.add(k); negs.append((x, None, src))
-    # test on whole days it never trains on; cap any one training day
+        nkeys.add(k); negs.append((x, None, src, base))
+    # test on whole days it never trains on; cap the new frames any one training day gives
     day = lambda x: local(x["ts"]).strftime("%Y-%m-%d")
     by_day = {}
     for t in kept:
@@ -377,21 +451,27 @@ def dataset(frames, revs, cam):
             cap = max(sizes[1], sum(min(s, sizes[1]) for s in sizes) // 3)
             for d, v in train_days.items():
                 if len(v) > cap:
-                    v.sort(key=lambda t: t[0]["ts"]); step = len(v) / cap
-                    train_days[d] = [v[int(i * step)] for i in range(cap)]
-                    capped[d] = [len(v), cap]
-        pos_items = [(t[0], t[1], "train", t[2]) for v in train_days.values() for t in v] + \
-                    [(t[0], t[1], "val", t[2]) for d in val_days for t in by_day[d]]
+                    old = [t for t in v if t[3]]
+                    fresh = sorted((t for t in v if not t[3]), key=lambda t: t[0]["ts"])
+                    room = max(0, cap - len(old))
+                    step = len(fresh) / room if room else 0
+                    train_days[d] = old + ([fresh[int(i * step)] for i in range(room)] if room else [])
+                    capped[d] = [len(v), len(train_days[d])]
+        pos_items = [(t[0], t[1], "train", t[2], t[3]) for v in train_days.values() for t in v] + \
+                    [(t[0], t[1], "val", t[2], t[3]) for d in val_days for t in by_day[d]]
     else:
         split_by = "hours"
         side = split_of
-        pos_items = [(x, b, split_of(x), src) for x, b, src in kept]
-    items = [(x, b, s) for x, b, s, _ in pos_items] + [(x, None, side(x)) for x, _, _ in negs]
+        pos_items = [(x, b, split_of(x), src, base) for x, b, src, base in kept]
+    items = [(x, b, s) for x, b, s, _, _ in pos_items] + [(x, None, side(x)) for x, _, _, _ in negs]
     c = {"pos": len(pos_items), "pos_all": n_pos_all, "pos_you": sum(1 for p in pos_items if p[3] == "you"),
          "neg": len(negs), "neg_all": n_neg_all, "neg_you": sum(1 for n in negs if n[2] == "you"),
+         "neg_event": sum(1 for n in negs if n[2] == "event"),
+         "in_use_run": run_in_use, "from_in_use": sum(1 for p in pos_items if p[4]) + sum(1 for n in negs if n[3]),
+         "new": sum(1 for p in pos_items if not p[4]) + sum(1 for n in negs if not n[3]), "known": known, "waiting": waiting,
          "left_out": sum(1 for x in frames.values() if x["cam"] == cam and x["label"] == "ask" and x["file"] not in revs),
          "split": split_by, "val_days": sorted(val_days), "capped": capped,
-         "train_days": len({day(x) for x, b, s, _ in pos_items if s == "train"}),
+         "train_days": len({day(x) for x, b, s, _, _ in pos_items if s == "train"}),
          "train": sum(1 for i in items if i[2] == "train"), "val": sum(1 for i in items if i[2] == "val"),
          "val_pos": sum(1 for i in items if i[2] == "val" and i[1]),
          "reviews": sum(1 for f in revs if f in frames and frames[f]["cam"] == cam)}

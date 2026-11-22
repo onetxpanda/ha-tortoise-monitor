@@ -17,7 +17,7 @@ from . import config, db, rules
 
 WINDOW = int(23.5 * 3600)
 SETTLE = 120               # the newest 2 minutes may still be being written
-EVENT_DAYS = 15
+EVENT_DAYS = 120          # Frigate keeps event snapshots for months; frames only for about a day
 EVENT_STEP = 5
 EVENT_MAX_FRAMES = 24
 PARALLEL = 2               # Frigate decodes each frame: keep its load light
