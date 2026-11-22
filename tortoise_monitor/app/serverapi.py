@@ -66,7 +66,8 @@ class Api:
                     b = json.loads(self.body() or b"{}")
                     jpeg = base64.b64decode(b["jpeg"]) if b.get("jpeg") else None
                     api.detection.handle(b["camera"], float(b["ts"]), b.get("run"), b.get("dets") or [], tuple(b["size"]),
-                                         f"server {srv['name']}", f"server {srv['name']}, {b.get('device', '?')}", b.get("ms"), jpeg=jpeg)
+                                         f"server {srv['name']}", f"server {srv['name']}, {b.get('device', '?')}", b.get("ms"), jpeg=jpeg,
+                                         unusable=b.get("unusable"))
                     return self.send(200, {"ok": True})
                 if method == "GET" and p == "/api/server/frame":
                     r = db.connect().execute("SELECT file FROM frames WHERE file=? AND deleted IS NULL", (q.get("file"),)).fetchone()

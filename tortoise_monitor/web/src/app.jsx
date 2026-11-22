@@ -646,9 +646,13 @@ function Results({ cam }) {
       </div>
       <div className="strip">{st.hours.map((h, i) => {
         const inside = h.seen - h.outside, cls = h.outside ? 'out' : inside ? 'in' : h.n ? 'none' : '';
-        return <div key={i} className={cls} title={`${h.label}:00 · ${h.n} checks · seen in ${inside}${yard ? ` · outside the walls in ${h.outside}` : ''}`} />;
+        return <div key={i} className={cls} title={`${h.label}:00 · ${h.n} checks · seen in ${inside}${yard ? ` · outside the walls in ${h.outside}` : ''}${h.bad ? ` · ${h.bad} frames not used` : ''}`} />;
       })}</div>
       <div className="striplab">{st.hours.map((h, i) => <span key={i}>{i % 3 === 0 ? h.label : ''}</span>)}</div>
+      {(() => {
+        const bad = st.hours.reduce((a, h) => a + (h.bad || 0), 0);
+        return bad > 0 && <p className="mut">Frames not used: {bad}{st.unusable && <> · last {at(st.unusable.ts)}, {st.unusable.reason}</>}</p>;
+      })()}
     </div>
     {st.has_snapshot && <div className="card"><h3>Last seen on this camera</h3><div style={{ maxWidth: 800 }}><Img src={`live?name=${enc(st.cam)}.jpg&t=${t}`} style={{ width: '100%', borderRadius: 6 }} /></div></div>}
     {yard && <div className="card"><h3>Seen outside the pen walls ({st.outside.length})</h3>

@@ -1,3 +1,8 @@
+## 2.0.2
+- A frame that can't be used now gives no answer instead of "not seen". That is a frame with an error from ffmpeg around it (a broken or reconnecting stream), or one too dark to show anything (mean brightness under 40 of 255, as when the lamp goes off before the camera switches to infrared). His location stays as it was; a camera with no usable frame for a minute goes to unknown, the same as one that stops
+- ffmpeg's error output is read as it comes instead of only when ffmpeg exits
+- Results: frames not used in each hour, and when and why the last one was not used
+
 ## 2.0.1
 - Heatmap: only the day's numbers are shown (how often, how long, first and last sighting); the inside/outside split and the notes about the points and the picture are gone
 

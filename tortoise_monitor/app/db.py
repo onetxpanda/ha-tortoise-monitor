@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS detections(
   score REAL, box TEXT, w INTEGER, h INTEGER, fx REAL, fy REAL, place TEXT);
 CREATE INDEX IF NOT EXISTS det_cam_ts ON detections(camera, ts);
 CREATE TABLE IF NOT EXISTS checks(ts REAL PRIMARY KEY, house_in INTEGER NOT NULL, outside INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS cycles(camera TEXT NOT NULL, hour REAL NOT NULL, n INTEGER NOT NULL, seen INTEGER NOT NULL, outside INTEGER NOT NULL, PRIMARY KEY(camera, hour));
+CREATE TABLE IF NOT EXISTS cycles(camera TEXT NOT NULL, hour REAL NOT NULL, n INTEGER NOT NULL, seen INTEGER NOT NULL, outside INTEGER NOT NULL,
+  bad INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(camera, hour));
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS deletions(at REAL NOT NULL, tier TEXT NOT NULL, files INTEGER NOT NULL, bytes INTEGER NOT NULL);
 """
@@ -46,7 +47,10 @@ def connect():
     if not _done:
         with _init:
             if not _done:
-                c.executescript(SCHEMA); c.commit(); _done = True
+                c.executescript(SCHEMA)
+                if "bad" not in {r[1] for r in c.execute("PRAGMA table_info(cycles)")}:   # frames that gave no answer (2.0.2)
+                    c.execute("ALTER TABLE cycles ADD COLUMN bad INTEGER NOT NULL DEFAULT 0")
+                c.commit(); _done = True
     return c
 
 

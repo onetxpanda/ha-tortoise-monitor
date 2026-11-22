@@ -14,7 +14,7 @@ Input shape: the long side `imgsz`, the short side scaled to match and padded
 to a multiple of 32 (2688x1512 -> 960x540 + 4 rows -> 960x544). That is the
 shape ultralytics itself uses for a single image, and the shape the models are
 exported at: no square padding to compute."""
-import math, subprocess, threading, time
+import collections, math, subprocess, threading, time
 
 import numpy as np
 
@@ -160,22 +160,42 @@ class TorchDetector:
             return out.float().cpu().numpy()
 
 
+# A frame that can't be used gives no answer (like a camera that is down), never "not seen".
+DARK_LUMA = 40.0     # mean brightness (0-255) below which a frame shows nothing. Normal frames,
+                     # infrared nights included, are 59 and up; the frame taken as the lamp went
+                     # off before the camera switched to infrared was 23.
+ERR_GRACE_S = 0.3    # ffmpeg's error lines can trail the frame they belong to
+
+
+def frame_luma(kind, buf, w, h):
+    """Mean brightness (0-255) of a reader frame, from every 4th row and column."""
+    if kind == "nv12":
+        y = np.frombuffer(buf, np.uint8, w * h).reshape(h, w)[::4, ::4]
+        return (float(y.mean()) - 16.0) * 255.0 / 219.0       # video range Y to 0-255
+    a = np.frombuffer(buf, np.uint8).reshape(h, w, 3)[::4, ::4]
+    m = a.reshape(-1, 3).mean(axis=0)
+    return float(0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2])
+
+
 class KeyframeReader(threading.Thread):
     """One camera's restream through ffmpeg: keyframes only, scaled to the
     model's input (before padding), newest one kept. hwaccel="vaapi" decodes
     and scales on an Intel GPU and hands over NV12; otherwise the CPU decodes
-    and hands over RGB."""
+    and hands over RGB. ffmpeg's error output is read as it comes: a frame
+    with an error around it is reported as unusable."""
 
     def __init__(self, url, sw, sh, hwaccel=None, log=print):
         super().__init__(daemon=True)
         self.url, self.sw, self.sh, self.hwaccel, self.log = url, sw, sh, hwaccel, log
         self.kind = "nv12" if hwaccel == "vaapi" else "rgb"
         self.size = sw * sh * 3 // 2 if self.kind == "nv12" else sw * sh * 3
-        self.latest = None                     # (time, bytes)
+        self.latest = None                     # (time, bytes, time of the frame before it or of ffmpeg's start)
+        self.errors = collections.deque(maxlen=200)   # (time, line) from ffmpeg's error output
         self.cond = threading.Condition()
         self.stopping = False
         self.proc = None
         self.frames = 0
+        self._logged = 0.0; self._quiet = 0
 
     def cmd(self):
         c = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-skip_frame", "nokey"]
@@ -188,11 +208,29 @@ class KeyframeReader(threading.Thread):
             pix = "rgb24"
         return c + ["-i", self.url, "-an", "-fps_mode", "passthrough", "-vf", vf, "-f", "rawvideo", "-pix_fmt", pix, "pipe:1"]
 
+    def _errors(self, proc):
+        """Reads ffmpeg's error output while it runs; logs at most one line per 30 s."""
+        for raw in iter(proc.stderr.readline, b""):
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            now = time.time()
+            with self.cond:
+                self.errors.append((now, line))
+            if now - self._logged >= 30:
+                more = f" (and {self._quiet} more lines)" if self._quiet else ""
+                self.log(f"restream {self.url}: {line[:300]}{more}")
+                self._logged = now; self._quiet = 0
+            else:
+                self._quiet += 1
+
     def run(self):
         backoff = 2
         while not self.stopping:
             try:
                 self.proc = subprocess.Popen(self.cmd(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+                drain = threading.Thread(target=self._errors, args=(self.proc,), daemon=True); drain.start()
+                prev = time.time()
                 while not self.stopping:
                     buf = bytearray(); need = self.size
                     while need:
@@ -200,26 +238,38 @@ class KeyframeReader(threading.Thread):
                         if not chunk:
                             raise EOFError
                         buf += chunk; need -= len(chunk)
+                    now = time.time()
                     with self.cond:
-                        self.latest = (time.time(), bytes(buf)); self.frames += 1
+                        self.latest = (now, bytes(buf), prev); self.frames += 1
                         self.cond.notify_all()
+                    prev = now
                     backoff = 2
             except Exception:
-                err = b""
-                try:
-                    err = self.proc.stderr.read(2000) if self.proc else b""
-                except Exception:
-                    pass
                 if not self.stopping:
-                    self.log(f"restream {self.url}: {err.decode(errors='replace').strip()[-300:] or 'ended'}; retrying in {backoff} s")
+                    self.log(f"restream {self.url}: ended; retrying in {backoff} s")
             finally:
                 if self.proc:
                     self.proc.kill(); self.proc.wait()
             if not self.stopping:
                 time.sleep(backoff); backoff = min(backoff * 2, 60)
 
+    def unusable(self, ts, buf, prev):
+        """Why a frame can't be used, or None: ffmpeg reported an error between
+        the frame before it (or ffmpeg's start) and just after it, or it is too
+        dark to show anything."""
+        with self.cond:
+            errs = [line for t, line in self.errors if prev < t <= ts + ERR_GRACE_S]
+        if errs:
+            return f"stream error: {errs[-1][:200]}"
+        luma = frame_luma(self.kind, buf, self.sw, self.sh)
+        if luma < DARK_LUMA:
+            return f"too dark to see ({luma:.0f} of 255)"
+        return None
+
     def newest(self, after=0.0, timeout=10.0):
-        """The newest frame taken after `after` (wall clock), waiting up to timeout."""
+        """The newest frame taken after `after` (wall clock), waiting up to
+        timeout: (time, bytes, unusable), where unusable is None or why the
+        frame can't be used."""
         end = time.time() + timeout
         with self.cond:
             while not (self.latest and self.latest[0] > after):
@@ -227,7 +277,11 @@ class KeyframeReader(threading.Thread):
                 if left <= 0:
                     return None
                 self.cond.wait(left)
-            return self.latest
+            ts, buf, prev = self.latest
+        wait = ts + ERR_GRACE_S - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        return ts, buf, self.unusable(ts, buf, prev)
 
     def stop(self):
         self.stopping = True

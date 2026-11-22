@@ -67,6 +67,7 @@ class CamLoop(threading.Thread):
         super().__init__(daemon=True)
         self.det, self.cam = det, cam
         self.stopping = False; self.device = None; self.ms = None; self.last = None; self.error = None; self.reader = None
+        self.unusable = None
 
     def model(self, name):
         d = os.path.join(BASE, "cache", "models", str(self.cam["run"])); os.makedirs(d, exist_ok=True)
@@ -109,7 +110,17 @@ class CamLoop(threading.Thread):
             f = self.reader.newest(after=last, timeout=20)
             if f is None:
                 continue
-            ts, buf = f; last = ts
+            ts, buf, bad = f; last = ts
+            if bad:                                                  # no answer from this frame
+                self.unusable = {"ts": ts, "reason": bad}
+                try:
+                    self.det.client.post("/api/server/detections", {"camera": self.cam["name"], "ts": ts, "run": self.cam["run"],
+                                                                    "unusable": bad, "size": [w, h], "device": self.device or "CPU"},
+                                         tries=1, timeout=10)
+                except Exception as e:
+                    self.error = str(e)
+                time.sleep(max(0.0, self.det.every - (time.time() - ts)))
+                continue
             rgb = np.frombuffer(buf, np.uint8).reshape(lb.sh, lb.sw, 3)
             x = lb.pad_rgb(rgb)
             t = time.time(); out = (gpu or cpu)(x); dets = D.decode(out, lb); self.ms = (time.time() - t) * 1000
@@ -152,7 +163,7 @@ class Detect:
                 log(f"detection {name}: run {c['run']}, {self.device}")
 
     def status(self):
-        return {n: {"device": l.device, "ms": l.ms, "last": l.last, "error": l.error} for n, l in self.loops.items()}
+        return {n: {"device": l.device, "ms": l.ms, "last": l.last, "error": l.error, "unusable": l.unusable} for n, l in self.loops.items()}
 
 
 # ---------------- jobs ----------------

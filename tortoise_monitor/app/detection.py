@@ -92,7 +92,11 @@ class LocalLoop(threading.Thread):
                     except Exception as e:
                         self.error = str(e); return
                 continue
-            ts, buf = f; last = ts
+            ts, buf, bad = f; last = ts
+            if bad:                                      # no answer from this frame
+                self.mgr.handle(self.cam, ts, self.run_id, [], self.size, "local", self.device, None, unusable=bad)
+                time.sleep(max(0.0, every - (time.time() - ts)))
+                continue
             x = self.lb.pad_nv12(buf) if self.reader.kind == "nv12" else self.lb.pad_rgb(np.frombuffer(buf, np.uint8).reshape(self.lb.sh, self.lb.sw, 3))
             t = time.time(); dets = D.decode(self.det(x), self.lb); ms = (time.time() - t) * 1000
             self.mgr.handle(self.cam, ts, self.run_id, dets, self.size, "local", self.device, ms,
@@ -117,23 +121,41 @@ class Manager:
 
     def cam(self, cam):
         return self.cams.setdefault(cam, {"source": None, "device": None, "ts": None, "ms": None, "seen": None, "place": None,
-                                          "score": None, "server_ts": 0, "snap_ts": 0, "snap_place": None, "run": None})
+                                          "score": None, "server_ts": 0, "snap_ts": 0, "snap_place": None, "run": None,
+                                          "unusable": None, "unusable_logged": 0})
 
-    def handle(self, cam, ts, run, dets, size, source, device, ms, frame=None, jpeg=None):
-        """One detection cycle's result, from a server or from this add-on."""
+    def handle(self, cam, ts, run, dets, size, source, device, ms, frame=None, jpeg=None, unusable=None):
+        """One detection cycle's result, from a server or from this add-on.
+        `unusable` (why the frame can't be used) means no answer: nothing about
+        him changes, and the camera's last answer ages towards stale."""
         with self.lock:
             st = self.cam(cam)
             if source != "local":
                 st["server_ts"] = time.time()
             elif time.time() - st["server_ts"] < server_fresh_s():
                 return                                   # a server is reporting: its results win
+            if unusable:
+                st["unusable"] = {"ts": ts, "reason": unusable, "source": source}
+                log_it = ts - st["unusable_logged"] >= 300
+                if log_it:
+                    st["unusable_logged"] = ts
+        if unusable:
+            c = db.connect()
+            c.execute("INSERT INTO cycles(camera, hour, n, seen, outside, bad) VALUES (?,?,0,0,0,1) "
+                      "ON CONFLICT(camera, hour) DO UPDATE SET bad=bad+1", (cam, ts - ts % 3600))
+            c.commit()
+            if log_it:
+                self.log(f"detection {cam}: frame not used ({unusable}); no answer")
+            return
+        with self.lock:
             top = dets[0] if dets and dets[0][0] >= rules.MODEL_YES else None
             poly = rules.outline(cam) if rules.outlined(cam) else None
             place = rules.place(cam, top[1], size, poly) if top else None
             st.update(source=source, device=device, ts=ts, ms=ms, seen=bool(top), place=place, score=top[0] if top else None, run=run)
         c = db.connect()
         hour = ts - ts % 3600
-        c.execute("INSERT INTO cycles VALUES (?,?,1,?,?) ON CONFLICT(camera, hour) DO UPDATE SET n=n+1, seen=seen+excluded.seen, outside=outside+excluded.outside",
+        c.execute("INSERT INTO cycles(camera, hour, n, seen, outside) VALUES (?,?,1,?,?) "
+                  "ON CONFLICT(camera, hour) DO UPDATE SET n=n+1, seen=seen+excluded.seen, outside=outside+excluded.outside",
                   (cam, hour, 1 if top else 0, 1 if place == "outside" else 0))
         if top:
             fx, fy = rules.foot(top[1], size)

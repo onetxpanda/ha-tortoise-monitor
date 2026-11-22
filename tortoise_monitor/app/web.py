@@ -201,7 +201,7 @@ class Site:
         for i in range(25):
             h = first + i * 3600; r = rows.get(h)
             hours.append({"start": h, "label": rules.local(h).strftime("%H"), "n": r["n"] if r else 0,
-                          "seen": r["seen"] if r else 0, "outside": r["outside"] if r else 0})
+                          "seen": r["seen"] if r else 0, "outside": r["outside"] if r else 0, "bad": r["bad"] if r else 0})
         outs = []
         d = os.path.join(config.LIVE, "outside")
         if os.path.isdir(d):
@@ -210,6 +210,7 @@ class Site:
                     ts = float(name[len(cam) + 1:-4]); outs.append({"name": name, "when": when(ts)})
         return {"cam": cam, "camName": cam_name(cam), "role": rules.role(cam), "model": db.kv_get(f"model:{cam}", None, c),
                 "outline": bool(rules.outline(cam, c)), "hours": hours, "outside": outs,
+                "unusable": self.detection.status()["cameras"].get(cam, {}).get("unusable"),
                 "has_snapshot": os.path.exists(os.path.join(config.LIVE, f"{cam}.jpg"))}
 
     def overview(self):
