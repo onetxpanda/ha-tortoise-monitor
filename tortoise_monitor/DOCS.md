@@ -73,8 +73,9 @@ A camera whose detection isn't running shows its entities as unknown.
 - **Detection**: keyframes from Frigate's restream (never the cameras
   directly), every few seconds. In the add-on they are decoded and scaled on
   the Intel GPU and the detector runs there with OpenVINO, else on the CPU.
-- **Heatmap**: every time the detector sees him, his foot point (the bottom
-  middle of his box) is kept with the time and place, for 90 days. Sightings
+- **Heatmap**: every time the detector sees him, his box is kept with the time
+  and place, for 90 days. The yard map shows his foot point (the bottom middle
+  of his box); the house map shows the centre of his box. Sightings
   come every few seconds while he's in view, so the heat shows time spent; it
   is scaled to the busiest spots so one long stay doesn't hide the rest. The
   picture behind it is that day's frame nearest 1 pm.

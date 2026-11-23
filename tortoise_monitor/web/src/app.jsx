@@ -687,8 +687,8 @@ function Results({ cam }) {
 }
 
 // ── Heatmap ───────────────────────────────────────────────────────────────────
-// Where he was on one day: his foot points as heat (time spent) or as dots
-// coloured by time of day, over a frame of that day.
+// Where he was on one day: his points (yard: feet; house: centre of his box) as
+// heat (time spent) or as dots coloured by time of day, over a frame of that day.
 const HEAT_STOPS = [[0, [40, 60, 255]], [0.35, [0, 220, 255]], [0.6, [70, 255, 60]], [0.8, [255, 225, 0]], [1, [255, 40, 0]]];
 function heatColor(v) {
   for (let i = 1; i < HEAT_STOPS.length; i++) {
@@ -700,7 +700,7 @@ function heatColor(v) {
   return HEAT_STOPS[HEAT_STOPS.length - 1][1];
 }
 const HEAT_CSS = 'linear-gradient(90deg,' + HEAT_STOPS.map(([v, c]) => `rgb(${c.join(',')}) ${v * 100}%`).join(',') + ')';
-// Each sighting adds a soft spot where his feet were; sightings come at a steady
+// Each sighting adds a soft spot where he was; sightings come at a steady
 // pace while he's in view, so the heat is time spent. Scaled to the busiest
 // spots (99th percentile), so one long stay doesn't wash out the rest.
 function drawHeat(cv, pts, size) {

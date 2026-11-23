@@ -1,3 +1,6 @@
+## 3.2.2
+- The house camera's heatmap shows the centre of his box. It showed the bottom centre (his feet), which lands on the lower edge of the picture whenever his box reaches it. The yard heatmap still shows his feet, the point the walls are judged by. Days already recorded are shown the new way too
+
 ## 3.2.1
 - Yard camera frames no longer get a timestamp error 6,000 s after detection starts reading the camera. 3.1.1 numbered frames in units of 1/90000 s, and a stream that declares 30 fps rounds those to whole frames, so 1,500 frames in a row got the same stamp. Frames are now numbered in whole seconds
 - Every ffmpeg error line now reaches the frame check. ffmpeg printed an error once and swallowed identical ones until a different line came, so the frames behind a repeated error were taken as clean

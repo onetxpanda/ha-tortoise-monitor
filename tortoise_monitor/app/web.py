@@ -126,9 +126,11 @@ class Site:
                 "feet_pts": feet[::max(1, len(feet) // 1500)]}
 
     def heatmap_state(self, cam, day=None):
-        """Where he was on one day: every sighting's foot point (fractions of the
-        frame) with its time, over a frame of that day. The days with sightings
-        come from the hourly cycle counts (as many as there are detection rows)."""
+        """Where he was on one day: every sighting's point (fractions of the frame)
+        with its time, over a frame of that day. The yard uses his foot point (the
+        bottom centre of his box, as the walls do); the house uses the centre of
+        his box. The days with sightings come from the hourly cycle counts (as
+        many as there are detection rows)."""
         if cam not in config.cameras():
             raise ValueError("unknown camera")
         c = db.connect()
@@ -143,8 +145,15 @@ class Site:
         day = day or (day_list[0]["day"] if day_list else rules.local(time.time()).strftime("%Y-%m-%d"))
         d0 = datetime.strptime(day, "%Y-%m-%d")
         start, end = d0.timestamp(), (d0 + timedelta(days=1)).timestamp()     # local midnights
-        rows = c.execute("SELECT ts, fx, fy, place FROM detections WHERE camera=? AND ts >= ? AND ts < ? ORDER BY ts",
+        rows = c.execute("SELECT ts, fx, fy, box, w, h, place FROM detections WHERE camera=? AND ts >= ? AND ts < ? ORDER BY ts",
                          (cam, start, end)).fetchall()
+        if rules.role(cam) == "house":
+            def point(r):
+                b = json.loads(r["box"])
+                return (b[0] + b[2]) / 2 / r["w"], (b[1] + b[3]) / 2 / r["h"]
+        else:
+            def point(r):
+                return r["fx"], r["fy"]
         every = float(config.options().get("detect_every_s", 5))
         seen_s, places = 0.0, {}
         for i, r in enumerate(rows):   # time in view: the gap to the next sighting, at most two cycles
@@ -166,7 +175,7 @@ class Site:
             d = c.execute("SELECT w, h FROM detections WHERE camera=? AND w IS NOT NULL ORDER BY ts DESC LIMIT 1", (cam,)).fetchone()
             size = [d["w"], d["h"]] if d else None
         return {"cam": cam, "camName": cam_name(cam), "role": rules.role(cam), "days": day_list, "day": day,
-                "points": [[round(r["fx"], 4), round(r["fy"], 4), round(r["ts"] - start), r["place"]] for r in rows],
+                "points": [[*(round(v, 4) for v in point(r)), round(r["ts"] - start), r["place"]] for r in rows],
                 "every": every, "seen_s": round(seen_s), "places": places,
                 "first": rows[0]["ts"] if rows else None, "last": rows[-1]["ts"] if rows else None,
                 "frame": {"file": fr["file"], "when": when(fr["ts"]), "same_day": start <= fr["ts"] < end} if fr else None,
