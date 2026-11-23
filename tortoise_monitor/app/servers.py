@@ -122,15 +122,19 @@ def main_detector(c=None):
     return None
 
 
-def detect_assignment(srv_id, c):
+def restream_base():
+    base = (config.options().get("server_restream_url") or "").rstrip("/")
+    if not base:
+        from . import ha
+        base = f"rtsp://{ha.host_address() or 'localhost'}:8554"
+    return base
+
+
+def detect_assignment(srv_id, c, base):
     m = main_detector(c)
     if not m or m["id"] != srv_id:
         return {"enabled": False}
     o = config.options()
-    base = (o.get("server_restream_url") or "").rstrip("/")
-    if not base:
-        from . import ha
-        base = f"rtsp://{ha.host_address() or 'localhost'}:8554"
     from .detection import frame_size, model_files
     cams = []
     for cam, cc in config.cameras().items():
@@ -144,6 +148,10 @@ def detect_assignment(srv_id, c):
 def poll(srv, body):
     c = db.connect(); now = time.time()
     info = body.get("info") or {}
+    # Asked before the first write: the address lookup asks the Supervisor over
+    # HTTP, and an open write holds the database lock, so live detections would
+    # wait for the Supervisor's answer.
+    base = restream_base()
     c.execute("UPDATE servers SET last_seen=?, info=? WHERE id=?", (now, json.dumps(info), srv["id"]))
     settings = json.loads(srv["settings"] or "{}")
     resp = {"addon_version": config.version(), "server_id": srv["id"], "name": srv["name"]}
@@ -159,7 +167,7 @@ def poll(srv, body):
         if j["id"] not in running:
             lose(c, j, "the server stopped working on it (it restarted or the job's process ended without a result)")
     resp["cancel"] = [j["id"] for j in c.execute("SELECT id FROM jobs WHERE server=? AND status='cancelled'", (srv["id"],)) if j["id"] in running]
-    resp["detect"] = detect_assignment(srv["id"], c)
+    resp["detect"] = detect_assignment(srv["id"], c, base)
     if not resp.get("update"):
         job = next_job(srv, info, c)
         if job:

@@ -66,7 +66,7 @@ class CamLoop(threading.Thread):
     def __init__(self, det, cam):
         super().__init__(daemon=True)
         self.det, self.cam = det, cam
-        self.stopping = False; self.device = None; self.ms = None; self.last = None; self.error = None; self.reader = None
+        self.stopping = False; self.device = None; self.ms = None; self.last = None; self.error = None; self.error_at = None; self.reader = None
         self.unusable = None
 
     def model(self, name):
@@ -78,6 +78,16 @@ class CamLoop(threading.Thread):
                 f.write(data)
             os.replace(p + ".part", p)
         return p
+
+    def send(self, body):
+        """One result to the add-on. A failure is logged and shown with its time.
+        After a timeout the add-on may still handle the result, late."""
+        t = time.time()
+        try:
+            self.det.client.post("/api/server/detections", body, tries=1, timeout=10)
+        except Exception as e:
+            self.error, self.error_at = str(e), time.time()
+            log(f"detection {self.cam['name']}: result for {time.strftime('%H:%M:%S', time.localtime(body['ts']))} failed after {time.time() - t:.1f} s: {e}")
 
     def run(self):
         import numpy as np
@@ -113,12 +123,8 @@ class CamLoop(threading.Thread):
             ts, buf, bad = f; last = ts
             if bad:                                                  # no answer from this frame
                 self.unusable = {"ts": ts, "reason": bad}
-                try:
-                    self.det.client.post("/api/server/detections", {"camera": self.cam["name"], "ts": ts, "run": self.cam["run"],
-                                                                    "unusable": bad, "size": [w, h], "device": self.device or "CPU"},
-                                         tries=1, timeout=10)
-                except Exception as e:
-                    self.error = str(e)
+                self.send({"camera": self.cam["name"], "ts": ts, "run": self.cam["run"],
+                           "unusable": bad, "size": [w, h], "device": self.device or "CPU"})
                 time.sleep(max(0.0, self.det.every - (time.time() - ts)))
                 continue
             rgb = np.frombuffer(buf, np.uint8).reshape(lb.sh, lb.sw, 3)
@@ -130,10 +136,7 @@ class CamLoop(threading.Thread):
                 from PIL import Image
                 b = io.BytesIO(); Image.fromarray(rgb).save(b, "JPEG", quality=80)
                 body["jpeg"] = base64.b64encode(b.getvalue()).decode(); last_jpeg = ts
-            try:
-                self.det.client.post("/api/server/detections", body, tries=1, timeout=10)
-            except Exception as e:
-                self.error = str(e)
+            self.send(body)
             time.sleep(max(0.0, self.det.every - (time.time() - ts)))
         if lease:
             lease.release()
@@ -163,7 +166,7 @@ class Detect:
                 log(f"detection {name}: run {c['run']}, {self.device}")
 
     def status(self):
-        return {n: {"device": l.device, "ms": l.ms, "last": l.last, "error": l.error, "unusable": l.unusable} for n, l in self.loops.items()}
+        return {n: {"device": l.device, "ms": l.ms, "last": l.last, "error": l.error, "error_at": l.error_at, "unusable": l.unusable} for n, l in self.loops.items()}
 
 
 # ---------------- jobs ----------------

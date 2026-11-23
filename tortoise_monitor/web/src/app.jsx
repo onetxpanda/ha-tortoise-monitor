@@ -878,7 +878,7 @@ function Servers() {
             <option value="cpu">CPU (OpenVINO)</option>
             <option value="gpu" disabled={!gp.length}>GPU (a free card; the CPU while someone else needs it)</option>
           </select></p>
-          {Object.keys(det).length > 0 && <p className="mut">{Object.entries(det).map(([c, d], n) => <React.Fragment key={c}>{n > 0 && ' · '}{camName(ov, c)}: {d.device ? d.device + (d.ms != null ? `, ${(+d.ms).toFixed(0)} ms` : '') : 'starting'}{d.error && <> <span className="err">{d.error}</span></>}</React.Fragment>)}</p>}
+          {Object.keys(det).length > 0 && <p className="mut">{Object.entries(det).map(([c, d], n) => <React.Fragment key={c}>{n > 0 && ' · '}{camName(ov, c)}: {d.device ? d.device + (d.ms != null ? `, ${(+d.ms).toFixed(0)} ms` : '') : 'starting'}{d.error && <> <span className="err">{d.error_at ? `${at(d.error_at)}: ` : ''}{d.error}</span></>}</React.Fragment>)}</p>}
           <p className="mut">Jobs running: {(i.jobs || []).length ? i.jobs.join(', ') : 'none'}</p>
           <div className="row">
             <label><input type="checkbox" checked={set.auto_update !== false} onChange={e => setting(s.id, { auto_update: e.target.checked })} /> Update from this add-on</label>

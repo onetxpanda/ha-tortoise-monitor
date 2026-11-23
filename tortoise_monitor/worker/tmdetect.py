@@ -198,18 +198,24 @@ class KeyframeReader(threading.Thread):
         self._logged = 0.0; self._quiet = 0
 
     def cmd(self):
-        c = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-skip_frame", "nokey"]
+        # repeat+: every error line is printed. Without it ffmpeg prints a line once
+        # and swallows identical ones until a different line comes, so the frames
+        # behind a repeated error looked clean.
+        c = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "repeat+error", "-rtsp_transport", "tcp", "-skip_frame", "nokey"]
         if self.hwaccel == "vaapi":
             c += ["-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128", "-hwaccel_output_format", "vaapi"]
-            vf = f"scale_vaapi=w={self.sw}:h={self.sh}:format=nv12,hwdownload,format=nv12,setpts=N"
+            vf = f"scale_vaapi=w={self.sw}:h={self.sh}:format=nv12,hwdownload,format=nv12,setpts=N/TB"
             pix = "nv12"
         else:
-            vf = f"scale={self.sw}:{self.sh}:flags=bilinear,setpts=N"
+            vf = f"scale={self.sw}:{self.sh}:flags=bilinear,setpts=N/TB"
             pix = "rgb24"
-        # Frames are numbered 0, 1, 2… on the way out (setpts=N): the time a frame
-        # is taken is when it arrives here, and the stream's own timestamps jump
-        # when Frigate reconnects to the camera, which made ffmpeg report every
-        # later frame as out of order although the picture was fine.
+        # Frame N leaves stamped N seconds (setpts=N/TB): the time a frame is taken
+        # is when it arrives here, and the stream's own timestamps jump when Frigate
+        # reconnects to the camera, which made ffmpeg report every later frame as
+        # out of order although the picture was fine. Whole seconds, because the
+        # output rounds to the stream's frame rate: setpts=N meant N/90000 s, so a
+        # 30 fps stream rounded 1,500 frames in a row to the same stamp, and
+        # ffmpeg reported frame 1,501 (6,000 s in at a keyframe every 4 s).
         return c + ["-i", self.url, "-an", "-fps_mode", "passthrough", "-vf", vf, "-f", "rawvideo", "-pix_fmt", pix, "pipe:1"]
 
     def _errors(self, proc):

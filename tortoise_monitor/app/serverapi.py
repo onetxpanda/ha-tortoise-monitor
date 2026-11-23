@@ -4,7 +4,7 @@ Open:     GET /server/install.sh, GET /server/bundle.tar.gz (code only, no secre
 Pairing:  POST /api/server/register {code, name, info} -> {id, key}
 Keyed (Authorization: Bearer <key>): check-ins, detections, frames and models
 to download, job progress and results, and the one-time import."""
-import base64, json, os, re, threading, traceback
+import base64, json, os, re, threading, time, traceback
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -63,11 +63,15 @@ class Api:
                 if method == "POST" and p == "/api/server/poll":
                     return self.send(200, servers.poll(srv, json.loads(self.body() or b"{}")))
                 if method == "POST" and p == "/api/server/detections":
+                    t0 = time.time()
                     b = json.loads(self.body() or b"{}")
                     jpeg = base64.b64decode(b["jpeg"]) if b.get("jpeg") else None
                     api.detection.handle(b["camera"], float(b["ts"]), b.get("run"), b.get("dets") or [], tuple(b["size"]),
                                          f"server {srv['name']}", f"server {srv['name']}, {b.get('device', '?')}", b.get("ms"), jpeg=jpeg,
                                          unusable=b.get("unusable"))
+                    took = time.time() - t0
+                    if took > 2:                         # the server gives up after 10 s
+                        api.log(f"detection {b['camera']}: result took {took:.1f} s to handle")
                     return self.send(200, {"ok": True})
                 if method == "GET" and p == "/api/server/frame":
                     r = db.connect().execute("SELECT file FROM frames WHERE file=? AND deleted IS NULL", (q.get("file"),)).fetchone()

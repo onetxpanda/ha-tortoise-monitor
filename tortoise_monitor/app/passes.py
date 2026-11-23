@@ -22,6 +22,12 @@ def waiting(c=None):
     return out
 
 
+def write(c, rows):
+    if rows:
+        c.executemany("INSERT OR REPLACE INTO preds VALUES (?,?,?,?)", rows); c.commit()
+        state["done"] += len(rows)
+
+
 def run_once(log=print, budget_s=600):
     """Work through unchecked frames, newest first, for up to budget_s."""
     import openvino as ov
@@ -40,21 +46,26 @@ def run_once(log=print, budget_s=600):
             rows = c.execute("SELECT f.file, f.w, f.h FROM frames f WHERE f.camera=? AND f.deleted IS NULL AND NOT EXISTS"
                              " (SELECT 1 FROM preds p WHERE p.file=f.file AND p.run=?) ORDER BY f.ts DESC LIMIT 2000", (cam, m["run"])).fetchall()
             imgsz = int(config.cameras()[cam].get("imgsz", 960))
-            for r in rows:
-                if time.time() > t_end or _stop.is_set():
-                    return
-                w, h = r["w"] or 2688, r["h"] or 1512
-                lb = D.Letterbox(imgsz, w, h)
-                try:
-                    rgb, _ = D.load_rgb(os.path.join(config.FRAMES, r["file"]), lb.sw, lb.sh)
-                except OSError:
-                    continue
-                dets = D.decode(det(lb.pad_rgb(rgb)), lb)
-                c.execute("INSERT OR REPLACE INTO preds VALUES (?,?,?,?)", (r["file"], m["run"], json.dumps(dets), time.time()))
-                state["done"] += 1
-                if state["done"] % 50 == 0:
-                    c.commit()
-            c.commit()
+            # Results are written 50 at a time in one short write. A write left open
+            # while frames are checked holds the database lock for the whole block,
+            # and live detections wait behind it (the server gives up after 10 s).
+            done = []
+            try:
+                for r in rows:
+                    if time.time() > t_end or _stop.is_set():
+                        return
+                    w, h = r["w"] or 2688, r["h"] or 1512
+                    lb = D.Letterbox(imgsz, w, h)
+                    try:
+                        rgb, _ = D.load_rgb(os.path.join(config.FRAMES, r["file"]), lb.sw, lb.sh)
+                    except OSError:
+                        continue
+                    dets = D.decode(det(lb.pad_rgb(rgb)), lb)
+                    done.append((r["file"], m["run"], json.dumps(dets), time.time()))
+                    if len(done) == 50:
+                        write(c, done); done = []
+            finally:
+                write(c, done)
     except Exception as e:
         state["error"] = str(e); log(f"detector pass: {e}")
     finally:

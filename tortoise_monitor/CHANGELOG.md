@@ -1,3 +1,10 @@
+## 3.2.1
+- Yard camera frames no longer get a timestamp error 6,000 s after detection starts reading the camera. 3.1.1 numbered frames in units of 1/90000 s, and a stream that declares 30 fps rounds those to whole frames, so 1,500 frames in a row got the same stamp. Frames are now numbered in whole seconds
+- Every ffmpeg error line now reaches the frame check. ffmpeg printed an error once and swallowed identical ones until a different line came, so the frames behind a repeated error were taken as clean
+- The detector pass no longer holds the database lock while it checks frames. Live results from the server waited behind it, about 3.4 s per 50 frames
+- A server's check-in no longer holds the database lock while it asks the Supervisor for this host's address
+- A result the server fails to post is logged with the frame's time and how long the post waited, and the Servers page shows when the last failure happened. The add-on logs any result that takes over 2 s to handle
+
 ## 3.2.0
 - Training keeps the last epoch of every run. Before, ultralytics picked the "best" epoch and stopped early by its own metrics, which rate an untrained first epoch that puts a box at confidence 1.00 everywhere as near-perfect; run 19 was that first epoch and found him in 0 of 25 held-out frames with false alarms in 59 of 59
 - Ultralytics' precision, recall and mAP are no longer used or shown anywhere
